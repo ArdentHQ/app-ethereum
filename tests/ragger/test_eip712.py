@@ -1,32 +1,54 @@
 import fnmatch
 import os
-from functools import partial
 from pathlib import Path
 import json
-from typing import Optional
+from typing import Optional, Callable
 from ctypes import c_uint64
+import hashlib
+
 import pytest
 from eth_account.messages import encode_typed_data
 import web3
 
 from ragger.backend import BackendInterface
-from ragger.firmware import Firmware
-from ragger.navigator import Navigator, NavInsID, NavIns
+from ragger.navigator import NavigateWithScenario
 from ragger.error import ExceptionRAPDU
 
 import client.response_parser as ResponseParser
-from client.utils import recover_message
-from client.client import EthAppClient, StatusWord, TrustedNameType, TrustedNameSource
+from client.utils import recover_message, get_selector_from_data
+from client.client import EthAppClient, TrustedNameType, TrustedNameSource, EIP712CalldataParamPresence
+from client.status_word import StatusWord
 from client.eip712 import InputData
 from client.settings import SettingID, settings_toggle
+from client.tx_simu import TxSimu
+from client.proxy_info import ProxyInfo
+
+from client.gcs import (
+    Field, ParamType, ParamRaw, Value, TypeFamily, DataPath, PathTuple, ParamTrustedName,
+    ParamNFT, ParamDatetime, DatetimeType, ParamTokenAmount, ParamToken, ParamCalldata,
+    ParamAmount, ContainerPath, PathLeaf, PathLeafType, PathRef, PathArray, TxInfo
+)
 
 
 BIP32_PATH = "m/44'/60'/0'/0/0"
-autonext_idx: int
-snapshots_dirname: Optional[str] = None
-WALLET_ADDR: Optional[bytes] = None
-unfiltered_flow: bool = False
-skip_flow: bool = False
+DEVICE_ADDR: Optional[bytes] = None
+
+
+def set_wallet_addr(backend: BackendInterface) -> bytes:
+    global DEVICE_ADDR
+
+    # don't ask again if we already have it
+    if DEVICE_ADDR is None:
+        client = EthAppClient(backend)
+        with client.get_public_addr(display=False):
+            pass
+        _, DEVICE_ADDR, _ = ResponseParser.pk_addr(client.response().data)
+
+
+@pytest.fixture(autouse=True)
+def init_wallet_addr(backend: BackendInterface):
+    """Initialize wallet address before each test"""
+    set_wallet_addr(backend)
 
 
 def eip712_json_path() -> str:
@@ -42,12 +64,12 @@ def input_files() -> list[str]:
 
 
 @pytest.fixture(name="input_file", params=input_files())
-def input_file_fixture(request) -> str:
+def input_file_fixture(request) -> Path:
     return Path(request.param)
 
 
-@pytest.fixture(name="verbose", params=[True, False])
-def verbose_fixture(request) -> bool:
+@pytest.fixture(name="verbose_raw", params=[True, False])
+def verbose_raw_fixture(request) -> bool:
     return request.param
 
 
@@ -56,157 +78,65 @@ def filtering_fixture(request) -> bool:
     return request.param
 
 
-def get_wallet_addr(client: EthAppClient) -> bytes:
-    global WALLET_ADDR
+def test_eip712_v0(scenario_navigator: NavigateWithScenario, simu_params: Optional[TxSimu] = None):
+    app_client = EthAppClient(scenario_navigator.backend)
 
-    # don't ask again if we already have it
-    if WALLET_ADDR is None:
-        with client.get_public_addr(display=False):
-            pass
-        _, WALLET_ADDR, _ = ResponseParser.pk_addr(client.response().data)
-    return WALLET_ADDR
-
-
-def test_eip712_v0(firmware: Firmware, backend: BackendInterface, navigator: Navigator):
-    app_client = EthAppClient(backend)
-
-    settings_toggle(firmware, navigator, [SettingID.BLIND_SIGNING])
+    settings_toggle(scenario_navigator.backend.device, scenario_navigator.navigator, [SettingID.BLIND_SIGNING])
     with open(input_files()[0], encoding="utf-8") as file:
         data = json.load(file)
     smsg = encode_typed_data(full_message=data)
+
+    if simu_params is not None:
+        set_wallet_addr(scenario_navigator.backend)
+        simu_params.from_addr = DEVICE_ADDR
+        simu_params.tx_hash = smsg.body
+        simu_params.domain_hash = smsg.header
+        response = app_client.provide_tx_simulation(simu_params)
+        assert response.status == StatusWord.OK
+
     with app_client.eip712_sign_legacy(BIP32_PATH, smsg.header, smsg.body):
-        moves = []
-        if firmware.is_nano:
-            moves += [NavInsID.RIGHT_CLICK] * 2
-            if firmware == Firmware.NANOS:
-                moves += [NavInsID.RIGHT_CLICK] * 8
-            else:
-                moves += [NavInsID.RIGHT_CLICK] * 4
-            moves += [NavInsID.BOTH_CLICK]
-        else:
-            moves += [NavInsID.USE_CASE_CHOICE_REJECT]
-            moves += [NavInsID.SWIPE_CENTER_TO_LEFT] * 2
-            moves += [NavInsID.USE_CASE_REVIEW_CONFIRM]
-        navigator.navigate(moves)
+        scenario_navigator.review_approve_with_warning(do_comparison=False)
 
     vrs = ResponseParser.signature(app_client.response().data)
-    recovered_addr = recover_message(data, vrs)
-
-    assert recovered_addr == get_wallet_addr(app_client)
+    assert DEVICE_ADDR == recover_message(data, vrs)
 
 
-def autonext(firmware: Firmware, navigator: Navigator, default_screenshot_path: Path):
-    global autonext_idx
+def eip712_new_common(scenario_navigator: NavigateWithScenario,
+                      data: dict,
+                      filters: Optional[dict] = None,
+                      snapshots_dirname: Optional[str] = None,
+                      with_warning: bool = False) -> bytes:
+    app_client = EthAppClient(scenario_navigator.backend)
 
-    moves = []
-    if firmware.is_nano:
-        moves = [NavInsID.RIGHT_CLICK]
-    else:
-        if autonext_idx == 0 and unfiltered_flow:
-            moves = [NavInsID.USE_CASE_CHOICE_REJECT]
-        else:
-            if autonext_idx == 2 and skip_flow:
-                InputData.disable_autonext()  # so the timer stops firing
-                if firmware == Firmware.STAX:
-                    skip_btn_pos = (355, 44)
-                else:  # FLEX
-                    skip_btn_pos = (420, 49)
-                moves = [
-                    # Ragger does not handle the skip button
-                    NavIns(NavInsID.TOUCH, skip_btn_pos),
-                    NavInsID.USE_CASE_CHOICE_CONFIRM,
-                ]
-            else:
-                moves = [NavInsID.SWIPE_CENTER_TO_LEFT]
-    if snapshots_dirname is not None:
-        navigator.navigate_and_compare(default_screenshot_path,
-                                       snapshots_dirname,
-                                       moves,
-                                       screen_change_before_first_instruction=False,
-                                       screen_change_after_last_instruction=False,
-                                       snap_start_idx=autonext_idx)
-    else:
-        navigator.navigate(moves,
-                           screen_change_before_first_instruction=False,
-                           screen_change_after_last_instruction=False)
-    autonext_idx += len(moves)
-
-
-def eip712_new_common(firmware: Firmware,
-                      navigator: Navigator,
-                      default_screenshot_path: Path,
-                      app_client: EthAppClient,
-                      json_data: dict,
-                      filters: Optional[dict],
-                      verbose: bool,
-                      golden_run: bool):
-    global autonext_idx
-    global unfiltered_flow
-    global skip_flow
-    global snapshots_dirname
-
-    autonext_idx = 0
-    assert InputData.process_data(app_client,
-                                  json_data,
-                                  filters,
-                                  partial(autonext, firmware, navigator, default_screenshot_path),
-                                  golden_run)
+    InputData.process_data(app_client, data, filters)
+    do_compare = snapshots_dirname is not None
     with app_client.eip712_sign_new(BIP32_PATH):
-        moves = []
-        if firmware.is_nano:
-            # need to skip the message hash
-            if not verbose and filters is None:
-                moves += [NavInsID.RIGHT_CLICK] * 2
-            moves += [NavInsID.BOTH_CLICK]
+        if with_warning:
+            # Warning screen
+            scenario_navigator.review_approve_with_warning(test_name=snapshots_dirname, do_comparison=do_compare)
         else:
-            if not skip_flow:
-                # this move is necessary most of the times, but can't be 100% sure with the fields grouping
-                moves += [NavInsID.SWIPE_CENTER_TO_LEFT]
-                # need to skip the message hash
-                if not verbose and filters is None:
-                    moves += [NavInsID.SWIPE_CENTER_TO_LEFT]
-            moves += [NavInsID.USE_CASE_REVIEW_CONFIRM]
-        if snapshots_dirname is not None:
-            # Could break (time-out) if given a JSON that requires less moves
-            # TODO: Maybe take list of moves as input instead of trying to guess them ?
-            navigator.navigate_and_compare(default_screenshot_path,
-                                           snapshots_dirname,
-                                           moves,
-                                           snap_start_idx=autonext_idx)
-        else:
-            # Do them one-by-one to prevent an unnecessary move from timing-out and failing the test
-            for move in moves:
-                navigator.navigate([move],
-                                   screen_change_before_first_instruction=False,
-                                   screen_change_after_last_instruction=False)
-    # reset values
-    unfiltered_flow = False
-    skip_flow = False
-    snapshots_dirname = None
+            scenario_navigator.review_approve(test_name=snapshots_dirname, do_comparison=do_compare)
 
-    return ResponseParser.signature(app_client.response().data)
+    vrs = ResponseParser.signature(app_client.response().data)
+    # verify signature
+    assert DEVICE_ADDR == recover_message(data, vrs)
 
 
-def test_eip712_new(firmware: Firmware,
-                    backend: BackendInterface,
-                    navigator: Navigator,
-                    default_screenshot_path: Path,
+def get_filter_file_from_data_file(data_file: Path) -> Path:
+    test_path = f"{data_file.parent}/{'-'.join(data_file.stem.split('-')[:-1])}"
+    return Path(f"{test_path}-filter.json")
+
+
+def test_eip712_new(scenario_navigator: NavigateWithScenario,
                     input_file: Path,
-                    verbose: bool,
+                    verbose_raw: bool,
                     filtering: bool):
-    global unfiltered_flow
-
     settings_to_toggle: list[SettingID] = []
-    app_client = EthAppClient(backend)
-    if firmware == Firmware.NANOS:
-        pytest.skip("Not supported on LNS")
-
-    test_path = f"{input_file.parent}/{'-'.join(input_file.stem.split('-')[:-1])}"
 
     filters = None
     if filtering:
         try:
-            filterfile = Path(f"{test_path}-filter.json")
+            filterfile = get_filter_file_from_data_file(input_file)
             with open(filterfile, encoding="utf-8") as f:
                 filters = json.load(f)
         except (IOError, json.decoder.JSONDecodeError) as e:
@@ -214,29 +144,15 @@ def test_eip712_new(firmware: Firmware,
     else:
         settings_to_toggle.append(SettingID.BLIND_SIGNING)
 
-    if verbose:
+    if verbose_raw:
         settings_to_toggle.append(SettingID.VERBOSE_EIP712)
 
-    if not filters or verbose:
-        unfiltered_flow = True
-
     if len(settings_to_toggle) > 0:
-        settings_toggle(firmware, navigator, settings_to_toggle)
+        settings_toggle(scenario_navigator.backend.device, scenario_navigator.navigator, settings_to_toggle)
 
     with open(input_file, encoding="utf-8") as file:
         data = json.load(file)
-        vrs = eip712_new_common(firmware,
-                                navigator,
-                                default_screenshot_path,
-                                app_client,
-                                data,
-                                filters,
-                                verbose,
-                                False)
-
-        recovered_addr = recover_message(data, vrs)
-
-    assert recovered_addr == get_wallet_addr(app_client)
+        eip712_new_common(scenario_navigator, data, filters, with_warning=bool(not filters or verbose_raw))
 
 
 class DataSet():
@@ -457,48 +373,25 @@ def data_set_fixture(request) -> DataSet:
     return request.param
 
 
-def test_eip712_advanced_filtering(firmware: Firmware,
-                                   backend: BackendInterface,
-                                   navigator: Navigator,
-                                   default_screenshot_path: Path,
+def test_eip712_advanced_filtering(scenario_navigator: NavigateWithScenario,
                                    test_name: str,
                                    data_set: DataSet,
-                                   golden_run: bool):
-    global snapshots_dirname
-
-    app_client = EthAppClient(backend)
-    if firmware == Firmware.NANOS:
-        pytest.skip("Not supported on LNS")
+                                   verbose_raw: bool):
+    if verbose_raw and data_set.suffix:
+        pytest.skip("Skipping Verbose mode for this data sets")
 
     snapshots_dirname = test_name + data_set.suffix
+    if verbose_raw:
+        settings_toggle(scenario_navigator.backend.device, scenario_navigator.navigator, [SettingID.DISPLAY_HASH])
+        snapshots_dirname += "-verbose"
 
-    vrs = eip712_new_common(firmware,
-                            navigator,
-                            default_screenshot_path,
-                            app_client,
-                            data_set.data,
-                            data_set.filters,
-                            False,
-                            golden_run)
-
-    # verify signature
-    addr = recover_message(data_set.data, vrs)
-    assert addr == get_wallet_addr(app_client)
+    eip712_new_common(scenario_navigator, data_set.data, data_set.filters, snapshots_dirname)
 
 
-def test_eip712_filtering_empty_array(firmware: Firmware,
-                                      backend: BackendInterface,
-                                      navigator: Navigator,
-                                      default_screenshot_path: Path,
+def test_eip712_filtering_empty_array(scenario_navigator: NavigateWithScenario,
                                       test_name: str,
-                                      golden_run: bool):
-    global snapshots_dirname
-
-    app_client = EthAppClient(backend)
-    if firmware == Firmware.NANOS:
-        pytest.skip("Not supported on LNS")
-
-    snapshots_dirname = test_name
+                                      simu_params: Optional[TxSimu] = None):
+    app_client = EthAppClient(scenario_navigator.backend)
 
     data = {
         "types": {
@@ -563,18 +456,16 @@ def test_eip712_filtering_empty_array(firmware: Firmware,
             },
         }
     }
-    vrs = eip712_new_common(firmware,
-                            navigator,
-                            default_screenshot_path,
-                            app_client,
-                            data,
-                            filters,
-                            False,
-                            golden_run)
 
-    # verify signature
-    addr = recover_message(data, vrs)
-    assert addr == get_wallet_addr(app_client)
+    if simu_params is not None:
+        set_wallet_addr(scenario_navigator.backend)
+        smsg = encode_typed_data(full_message=data)
+        simu_params.tx_hash = smsg.body
+        simu_params.domain_hash = smsg.header
+        response = app_client.provide_tx_simulation(simu_params)
+        assert response.status == StatusWord.OK
+
+    eip712_new_common(scenario_navigator, data, filters, test_name, with_warning=bool(simu_params is not None))
 
 
 TOKENS = [
@@ -604,21 +495,10 @@ def tokens_fixture(request) -> list[dict]:
     return request.param
 
 
-def test_eip712_advanced_missing_token(firmware: Firmware,
-                                       backend: BackendInterface,
-                                       navigator: Navigator,
-                                       default_screenshot_path: Path,
+def test_eip712_advanced_missing_token(scenario_navigator: NavigateWithScenario,
                                        test_name: str,
-                                       tokens: list[dict],
-                                       golden_run: bool):
-    global snapshots_dirname
-
+                                       tokens: list[dict]):
     test_name += f"-{len(tokens[0]) == 0}-{len(tokens[1]) == 0}"
-    snapshots_dirname = test_name
-
-    app_client = EthAppClient(backend)
-    if firmware == Firmware.NANOS:
-        pytest.skip("Not supported on LNS")
 
     data = {
         "types": {
@@ -674,18 +554,8 @@ def test_eip712_advanced_missing_token(firmware: Firmware,
             },
         }
     }
-    vrs = eip712_new_common(firmware,
-                            navigator,
-                            default_screenshot_path,
-                            app_client,
-                            data,
-                            filters,
-                            False,
-                            golden_run)
 
-    # verify signature
-    addr = recover_message(data, vrs)
-    assert addr == get_wallet_addr(app_client)
+    eip712_new_common(scenario_navigator, data, filters, test_name)
 
 
 TRUSTED_NAMES = [
@@ -711,24 +581,15 @@ def filt_tn_types_fixture(request) -> list[TrustedNameType]:
     return request.param
 
 
-def test_eip712_advanced_trusted_name(firmware: Firmware,
-                                      backend: BackendInterface,
-                                      navigator: Navigator,
-                                      default_screenshot_path: Path,
+def test_eip712_advanced_trusted_name(scenario_navigator: NavigateWithScenario,
                                       test_name: str,
                                       trusted_name: tuple,
-                                      filt_tn_types: list[TrustedNameType],
-                                      golden_run: bool):
-    global snapshots_dirname
-
+                                      filt_tn_types: list[TrustedNameType]):
     test_name += f"_{trusted_name[0].name.lower()}_with"
     for t in filt_tn_types:
         test_name += f"_{t.name.lower()}"
-    snapshots_dirname = test_name
 
-    app_client = EthAppClient(backend)
-    if firmware == Firmware.NANOS:
-        pytest.skip("Not supported on LNS")
+    app_client = EthAppClient(scenario_navigator.backend)
 
     data = {
         "types": {
@@ -783,67 +644,130 @@ def test_eip712_advanced_trusted_name(firmware: Firmware,
                                        trusted_name[1],
                                        data["domain"]["chainId"],
                                        challenge=challenge)
-    vrs = eip712_new_common(firmware,
-                            navigator,
-                            default_screenshot_path,
-                            app_client,
-                            data,
-                            filters,
-                            False,
-                            golden_run)
-
-    # verify signature
-    addr = recover_message(data, vrs)
-    assert addr == get_wallet_addr(app_client)
+    eip712_new_common(scenario_navigator, data, filters, test_name)
 
 
-def test_eip712_bs_not_activated_error(firmware: Firmware,
-                                       backend: BackendInterface,
-                                       navigator: Navigator,
-                                       default_screenshot_path: Path):
-    app_client = EthAppClient(backend)
-    if firmware == Firmware.NANOS:
-        pytest.skip("Not supported on LNS")
-
+def test_eip712_bs_not_activated_error(scenario_navigator: NavigateWithScenario):
     with pytest.raises(ExceptionRAPDU) as e:
-        eip712_new_common(firmware,
-                          navigator,
-                          default_screenshot_path,
-                          app_client,
-                          ADVANCED_DATA_SETS[0].data,
-                          None,
-                          False,
-                          False)
-    InputData.disable_autonext()  # so the timer stops firing
+        eip712_new_common(scenario_navigator, ADVANCED_DATA_SETS[0].data)
     assert e.value.status == StatusWord.INVALID_DATA
 
 
-def test_eip712_skip(firmware: Firmware,
-                     backend: BackendInterface,
-                     navigator: Navigator,
-                     default_screenshot_path: Path,
-                     golden_run: bool):
-    global unfiltered_flow
-    global skip_flow
+def test_eip712_proxy(scenario_navigator: NavigateWithScenario):
+    app_client = EthAppClient(scenario_navigator.backend)
 
-    app_client = EthAppClient(backend)
-    if firmware.is_nano:
-        pytest.skip("Not supported on Nano devices")
-
-    unfiltered_flow = True
-    skip_flow = True
-    settings_toggle(firmware, navigator, [SettingID.BLIND_SIGNING])
-    with open(input_files()[0], encoding="utf-8") as file:
+    input_file = input_files()[0]
+    with open(input_file, encoding="utf-8") as file:
         data = json.load(file)
-    vrs = eip712_new_common(firmware,
-                            navigator,
-                            default_screenshot_path,
-                            app_client,
-                            data,
-                            None,
-                            False,
-                            golden_run)
+    with open(get_filter_file_from_data_file(Path(input_file)), encoding="utf-8") as file:
+        filters = json.load(file)
+    # change its name & set a different address than the one in verifyingContract
+    filters["name"] = "Proxy test"
+    filters["address"] = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-    # verify signature
-    addr = recover_message(data, vrs)
-    assert addr == get_wallet_addr(app_client)
+    proxy_info = ProxyInfo(
+        ResponseParser.challenge(app_client.get_challenge().data),
+        bytes.fromhex(data["domain"]["verifyingContract"][2:]),
+        int(data["domain"]["chainId"]),
+        bytes.fromhex(filters["address"][2:]),
+    )
+
+    app_client.provide_proxy_info(proxy_info.serialize())
+
+    eip712_new_common(scenario_navigator, data, filters)
+
+
+def gcs_handler(app_client: EthAppClient, json_data: dict) -> None:
+    fields = [
+        Field(
+            1,
+            "Amount",
+            ParamTokenAmount(
+                1,
+                Value(
+                    1,
+                    TypeFamily.UINT,
+                    type_size=32,
+                    data_path=DataPath(
+                        1,
+                        [
+                            PathTuple(1),
+                            PathLeaf(PathLeafType.STATIC),
+                        ]
+                    ),
+                ),
+                token=Value(
+                    1,
+                    TypeFamily.ADDRESS,
+                    container_path=ContainerPath.TO,
+                ),
+            )
+        ),
+    ]
+    # compute instructions hash
+    inst_hash = hashlib.sha3_256()
+    for field in fields:
+        inst_hash.update(field.serialize())
+    tx_info = TxInfo(
+        1,
+        json_data["domain"]["chainId"],
+        bytes.fromhex(json_data["message"]["to"][2:]),
+        get_selector_from_data(json_data["message"]["data"]),
+        inst_hash.digest(),
+        "Token transfer",
+        contract_name="USDC",
+    )
+    app_client.provide_token_metadata(tx_info.contract_name, tx_info.contract_addr, 6, tx_info.chain_id)
+
+    app_client.provide_transaction_info(tx_info.serialize())
+
+    for field in fields:
+        app_client.provide_transaction_field_desc(field.serialize())
+
+
+def eip712_calldata_common(scenario_navigator: NavigateWithScenario,
+                           test_name: str,
+                           filename: str,
+                           handler: Optional[Callable] = None):
+    with open("%s/%s.json" % (eip712_json_path(), filename)) as file:
+        data = json.load(file)
+
+    filters = {
+        "name": "Calldata test",
+        "calldatas": [
+            {
+                "index": 0,
+                "handler": handler,
+                "value_flag": True,
+                "callee_flag": EIP712CalldataParamPresence.PRESENT_FILTERED,
+                "chain_id_flag": False,
+                "selector_flag": False,
+                "amount_flag": True,
+                "spender_flag": EIP712CalldataParamPresence.NONE,
+            },
+        ],
+        "fields": {
+            "to": {
+                "type": "calldata_callee",
+                "index": 0,
+            },
+            "value": {
+                "type": "calldata_amount",
+                "index": 0,
+            },
+            "data": {
+                "type": "calldata_value",
+                "index": 0,
+            },
+        }
+    }
+
+    eip712_new_common(scenario_navigator, data, filters, test_name)
+
+
+def test_eip712_calldata(scenario_navigator: NavigateWithScenario, test_name: str):
+    eip712_calldata_common(scenario_navigator, test_name, "safe", gcs_handler)
+
+
+def test_eip712_calldata_empty_send(scenario_navigator: NavigateWithScenario, test_name: str):
+    eip712_calldata_common(scenario_navigator, test_name, "safe_empty")

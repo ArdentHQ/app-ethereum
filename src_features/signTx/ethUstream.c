@@ -22,9 +22,11 @@
 #include "rlp_utils.h"
 #include "common_utils.h"
 #include "feature_signTx.h"
-#ifdef HAVE_GENERIC_TX_PARSER
 #include "calldata.h"
-#endif
+#include "tx_ctx.h"  // g_parked_calldata
+#include "utils.h"
+#include "shared_context.h"  // tmpContent
+#include "read.h"            // read_u64_be
 
 static bool check_fields(txContext_t *context, const char *name, uint32_t length) {
     UNUSED(name);  // Just for the case where DEBUG is not enabled
@@ -62,11 +64,7 @@ bool init_tx(txContext_t *context, cx_sha3_t *sha3, txContent_t *content, bool s
     context->sha3 = sha3;
     context->content = content;
     context->currentField = RLP_NONE + 1;
-#ifdef HAVE_GENERIC_TX_PARSER
     context->store_calldata = store_calldata;
-#else
-    UNUSED(store_calldata);
-#endif
     if (cx_keccak_init_no_throw(context->sha3, 256) != CX_OK) {
         return false;
     }
@@ -132,6 +130,25 @@ static bool processContent(txContext_t *context) {
 
 static bool processAccessList(txContext_t *context) {
     if (check_empty_list(context, "RLP_ACCESS_LIST") == false) {
+        return false;
+    }
+
+    if (context->currentFieldPos < context->currentFieldLength) {
+        uint32_t copySize =
+            MIN(context->commandLength, context->currentFieldLength - context->currentFieldPos);
+        if (copyTxData(context, NULL, copySize) == false) {
+            return false;
+        }
+    }
+    if (context->currentFieldPos == context->currentFieldLength) {
+        context->currentField++;
+        context->processingField = false;
+    }
+    return true;
+}
+
+static bool processAuthList(txContext_t *context) {
+    if (check_empty_list(context, "RLP_AUTH_LIST") == false) {
         return false;
     }
 
@@ -283,6 +300,8 @@ static bool processTo(txContext_t *context) {
 }
 
 static bool processData(txContext_t *context) {
+    uint32_t offset = 0;
+
     PRINTF("PROCESS DATA\n");
     if (check_fields(context, "RLP_DATA", 0) == false) {
         return false;
@@ -295,21 +314,56 @@ static bool processData(txContext_t *context) {
         if (copySize == 1 && *context->workBuffer == 0x00) {
             context->content->dataPresent = false;
         }
-#ifdef HAVE_GENERIC_TX_PARSER
         if (context->store_calldata) {
             if (context->currentFieldPos == 0) {
-                if (!calldata_init(context->currentFieldLength)) {
+                if (copySize < 4) {
+                    PRINTF("Was about to initialize a calldata without a complete selector (%u)!\n",
+                           copySize);
+                    return false;
+                }
+                offset = CALLDATA_SELECTOR_SIZE;
+                if ((g_parked_calldata = calldata_init(context->currentFieldLength - offset,
+                                                       context->workBuffer)) == NULL) {
                     return false;
                 }
             }
-            calldata_append(context->workBuffer, copySize);
+            if (!calldata_append(g_parked_calldata,
+                                 context->workBuffer + offset,
+                                 copySize - offset))
+                return false;
         }
-#endif
         if (copyTxData(context, NULL, copySize) == false) {
             return false;
         }
     }
     if (context->currentFieldPos == context->currentFieldLength) {
+        if (context->store_calldata) {
+            uint8_t to[ADDRESS_LENGTH];
+            uint8_t amount[INT256_LENGTH];
+            uint64_t chain_id;
+            uint8_t chain_id_buf[sizeof(chain_id)];
+
+            buf_shrink_expand(tmpContent.txContent.destination,
+                              tmpContent.txContent.destinationLength,
+                              to,
+                              sizeof(to));
+            buf_shrink_expand(tmpContent.txContent.value.value,
+                              tmpContent.txContent.value.length,
+                              amount,
+                              sizeof(amount));
+            buf_shrink_expand(tmpContent.txContent.chainID.value,
+                              tmpContent.txContent.chainID.length,
+                              chain_id_buf,
+                              sizeof(chain_id_buf));
+            chain_id = read_u64_be(chain_id_buf, 0);
+
+            if (!tx_ctx_init(g_parked_calldata, NULL, to, amount, &chain_id)) {
+                calldata_delete(g_parked_calldata);
+                g_parked_calldata = NULL;
+                return false;
+            }
+            g_parked_calldata = NULL;
+        }
         PRINTF("incrementing field\n");
         context->currentField++;
         context->processingField = false;
@@ -357,6 +411,58 @@ static bool processV(txContext_t *context) {
         context->processingField = false;
     }
     return true;
+}
+
+static bool processEIP7702Tx(txContext_t *context) {
+    bool ret = false;
+    switch (context->currentField) {
+        case EIP7702_RLP_CONTENT: {
+            ret = processContent(context);
+            break;
+        }
+        case EIP7702_RLP_CHAINID: {
+            ret = processChainID(context);
+            break;
+        }
+        case EIP7702_RLP_NONCE: {
+            ret = processNonce(context);
+            break;
+        }
+        case EIP7702_RLP_MAX_FEE_PER_GAS: {
+            ret = processGasprice(context);
+            break;
+        }
+        case EIP7702_RLP_GASLIMIT: {
+            ret = processGasLimit(context);
+            break;
+        }
+        case EIP7702_RLP_TO: {
+            ret = processTo(context);
+            break;
+        }
+        case EIP7702_RLP_VALUE: {
+            ret = processValue(context);
+            break;
+        }
+        case EIP7702_RLP_DATA: {
+            ret = processData(context);
+            break;
+        }
+        case EIP7702_RLP_ACCESS_LIST: {
+            ret = processAccessList(context);
+            break;
+        }
+        case EIP7702_RLP_AUTH_LIST: {
+            ret = processAuthList(context);
+            break;
+        }
+        case EIP7702_RLP_MAX_PRIORITY_FEE_PER_GAS:
+            ret = processAndDiscard(context);
+            break;
+        default:
+            PRINTF("Invalid RLP decoder context\n");
+    }
+    return ret;
 }
 
 static bool processEIP1559Tx(txContext_t *context) {
@@ -580,6 +686,11 @@ static parserStatus_e processTxInternal(txContext_t *context) {
                     break;
                 case EIP1559:
                     if (processEIP1559Tx(context) == false) {
+                        return USTREAM_FAULT;
+                    }
+                    break;
+                case EIP7702:
+                    if (processEIP7702Tx(context) == false) {
                         return USTREAM_FAULT;
                     }
                     break;

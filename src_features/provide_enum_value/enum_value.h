@@ -1,11 +1,11 @@
-#ifndef ENUM_VALUE_H_
-#define ENUM_VALUE_H_
+#pragma once
 
 #include <stdbool.h>
 #include "common_utils.h"  // ADDRESS_LENGTH
 #include "plugin_utils.h"  // SELECTOR_SIZE
 #include "tlv.h"
 #include "cx.h"
+#include "signature.h"
 
 typedef struct {
     uint64_t chain_id;
@@ -20,7 +20,7 @@ typedef struct {
     uint8_t version;
     s_enum_value_entry entry;
     uint8_t signature_length;
-    uint8_t signature[73];
+    uint8_t signature[ECDSA_SIGNATURE_MAX_LENGTH];
 } s_enum_value;
 
 typedef struct {
@@ -35,5 +35,4 @@ const char *get_matching_enum_name(const uint64_t *chain_id,
                                    const uint8_t *selector,
                                    uint8_t id,
                                    uint8_t value);
-
-#endif  // !ENUM_VALUE_H_
+void enum_value_cleanup(void);

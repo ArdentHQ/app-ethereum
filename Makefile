@@ -19,7 +19,7 @@ ifeq ($(BOLOS_SDK),)
     $(error Environment variable BOLOS_SDK is not set)
 endif
 
-include $(BOLOS_SDK)/Makefile.defines
+include $(BOLOS_SDK)/Makefile.target
 
 ########################################
 #        Mandatory configuration       #
@@ -36,43 +36,49 @@ endif
 include ./makefile_conf/chain/$(CHAIN).mk
 
 APPVERSION_M = 1
-APPVERSION_N = 16
+APPVERSION_N = 19
 APPVERSION_P = 0
 APPVERSION = $(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)-dev
 
 # Application source files
-APP_SOURCE_PATH += src src_features src_plugins
-ifeq ($(TARGET_NAME),$(filter $(TARGET_NAME),TARGET_STAX TARGET_FLEX))
-    APP_SOURCE_PATH += src_nbgl
-else
-    APP_SOURCE_PATH += src_bagl
-endif
+APP_SOURCE_PATH += src src_features src_plugins src_nbgl
 APP_SOURCE_FILES += $(filter-out ./ethereum-plugin-sdk/src/main.c, $(wildcard ./ethereum-plugin-sdk/src/*.c))
 INCLUDES_PATH += ./ethereum-plugin-sdk/src
 
-ifeq ($(TARGET_NAME),$(filter $(TARGET_NAME),TARGET_STAX TARGET_FLEX))
-NETWORK_ICONS_FILE = $(GEN_SRC_DIR)/net_icons.gen.c
-NETWORK_ICONS_DIR = $(shell dirname "$(NETWORK_ICONS_FILE)")
+ifeq ($(TARGET_NAME),$(filter $(TARGET_NAME),TARGET_STAX TARGET_FLEX TARGET_APEX_M TARGET_APEX_P))
+    NETWORK_ICONS_FILE = $(GEN_SRC_DIR)/net_icons.gen.c
+    NETWORK_ICONS_DIR = $(shell dirname "$(NETWORK_ICONS_FILE)")
 
-$(NETWORK_ICONS_FILE):
-	$(shell python3 tools/gen_networks.py "$(NETWORK_ICONS_DIR)")
+    $(NETWORK_ICONS_FILE):
+    	$(shell python3 tools/gen_networks.py "$(NETWORK_ICONS_DIR)")
 
-APP_SOURCE_FILES += $(NETWORK_ICONS_FILE)
+    APP_SOURCE_FILES += $(NETWORK_ICONS_FILE)
 endif
 
 # Application icons following guidelines:
 # https://developers.ledger.com/docs/embedded-app/design-requirements/#device-icon
-ICON_NANOS = icons/nanos_app_chain_$(CHAIN_ID).gif
 ICON_NANOX = icons/nanox_app_chain_$(CHAIN_ID).gif
 ICON_NANOSP = icons/nanox_app_chain_$(CHAIN_ID).gif
 ICON_STAX = icons/stax_app_chain_$(CHAIN_ID).gif
 ICON_FLEX = icons/flex_app_chain_$(CHAIN_ID).gif
+ICON_APEX_M = icons/apex_app_chain_$(CHAIN_ID).gif
+ICON_APEX_P = icons/apex_app_chain_$(CHAIN_ID).gif
 
 #prepare hsm generation
 ifeq ($(TARGET_NAME),$(filter $(TARGET_NAME),TARGET_STAX TARGET_FLEX))
     DEFINES += ICONGLYPH=C_chain_$(CHAIN_ID)_64px
     DEFINES += ICONBITMAP=C_chain_$(CHAIN_ID)_64px_bitmap
-    DEFINES += ICONGLYPH_SMALL=C_chain_$(CHAIN_ID)
+    DEFINES += ICONHOME=C_chain_$(CHAIN_ID)_64px
+else ifeq ($(TARGET_NAME),$(filter $(TARGET_NAME), TARGET_APEX_M TARGET_APEX_P))
+    DEFINES += ICONGLYPH=C_chain_$(CHAIN_ID)_48px
+    DEFINES += ICONBITMAP=C_chain_$(CHAIN_ID)_48px_bitmap
+    DEFINES += ICONHOME=C_chain_$(CHAIN_ID)_48px
+else ifeq ($(TARGET_NAME),$(filter $(TARGET_NAME),TARGET_NANOX TARGET_NANOS2))
+    DEFINES += ICONGLYPH=C_chain_$(CHAIN_ID)_14px
+    DEFINES += ICONBITMAP=C_chain_$(CHAIN_ID)_14px_bitmap
+
+    ICON_HOME_NANO = glyphs/home_chain_$(CHAIN_ID)_14px.gif
+    DEFINES += ICONHOME=C_home_chain_$(CHAIN_ID)_14px
 endif
 
 # Don't define plugin function in the plugin SDK
@@ -103,12 +109,6 @@ PATH_APP_LOAD_PARAMS += "45'" "44'/1'"
 VARIANT_PARAM = CHAIN
 VARIANT_VALUES = $(SUPPORTED_CHAINS)
 
-# Activate dependency only for specific CHAIN
-ifneq ($(CHAIN),ethereum)
-    DEP_APP_LOAD_PARAMS = Ethereum:$(APPVERSION)
-    DEFINES_LIB = USE_LIB_ETHEREUM
-endif
-
 # Enabling DEBUG flag will enable PRINTF and disable optimizations
 #DEBUG = 1
 
@@ -117,9 +117,16 @@ endif
 ########################################
 # See SDK `include/appflags.h` for the purpose of each permission
 #HAVE_APPLICATION_FLAG_DERIVE_MASTER = 1
-HAVE_APPLICATION_FLAG_GLOBAL_PIN = 1
-HAVE_APPLICATION_FLAG_BOLOS_SETTINGS = 1
-HAVE_APPLICATION_FLAG_LIBRARY = 1
+#HAVE_APPLICATION_FLAG_GLOBAL_PIN = 1
+#HAVE_APPLICATION_FLAG_BOLOS_SETTINGS = 1
+ifeq ($(CHAIN),ethereum)
+    HAVE_APPLICATION_FLAG_LIBRARY = 1
+else
+    # Activate dependency only for specific CHAIN
+    DEP_APP_LOAD_PARAMS = Ethereum:$(APPVERSION)
+    DEFINES_LIB = USE_LIB_ETHEREUM
+endif
+
 
 ########################################
 # Application communication interfaces #
@@ -127,6 +134,7 @@ HAVE_APPLICATION_FLAG_LIBRARY = 1
 ENABLE_BLUETOOTH = 1
 ENABLE_SWAP = 1
 #ENABLE_NFC = 1
+ENABLE_NBGL_FOR_NANO_DEVICES = 1
 
 ########################################
 #         NBGL custom features         #
@@ -146,7 +154,6 @@ ENABLE_NBGL_QRCODE = 1
 #DISABLE_STANDARD_SNPRINTF = 1
 #DISABLE_STANDARD_USB = 1
 #DISABLE_STANDARD_WEBUSB = 1
-#DISABLE_STANDARD_BAGL_UX_FLOW = 1
 #DISABLE_DEBUG_LEDGER_ASSERT = 1
 #DISABLE_DEBUG_THROW = 1
 

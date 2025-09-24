@@ -24,18 +24,21 @@ if (NOT DEFINED BOLOS_SDK)
   set(BOLOS_SDK /opt/${TARGET_DEVICE}-secure-sdk)
 endif()
 
+# some flags to mimic the embedded build (such as packed enums)
+set(CUSTOM_C_FLAGS -fdata-sections -ffunction-sections -funsigned-char -fshort-enums)
+
 # compatible with ClusterFuzzLite
 if (NOT DEFINED ENV{LIB_FUZZING_ENGINE})
-	set(COMPILATION_FLAGS -g -O0 -Wall -Wextra -fprofile-instr-generate -fcoverage-mapping)
+	set(COMPILATION_FLAGS ${CUSTOM_C_FLAGS} -g -O0 -Wall -Wextra -fprofile-instr-generate -fcoverage-mapping)
   if (SANITIZER MATCHES "address")
     set(COMPILATION_FLAGS ${COMPILATION_FLAGS} -fsanitize=fuzzer,address,undefined)
   elseif (SANITIZER MATCHES "memory")
     set(COMPILATION_FLAGS ${COMPILATION_FLAGS} -fsanitize=fuzzer,memory,undefined -fsanitize-memory-track-origins -fsanitize=fuzzer-no-link)
   else()
-    message(FATAL_ERROR "Unkown sanitizer type. It must be set to `address` or `memory`.")
+    message(FATAL_ERROR "Unknown sanitizer type. It must be set to `address` or `memory`.")
   endif()
 else()
-	set(COMPILATION_FLAGS "$ENV{LIB_FUZZING_ENGINE} $ENV{CFLAGS}")
+	set(COMPILATION_FLAGS "$ENV{LIB_FUZZING_ENGINE} $ENV{CFLAGS} ${CUSTOM_C_FLAGS}")
   separate_arguments(COMPILATION_FLAGS)
 endif()
 
@@ -147,14 +150,11 @@ set(DEFINES
     WEBUSB_URL_SIZE_B=0
     WEBUSB_URL=
     OS_IO_SEPROXYHAL
+    OS_IO_SEPH_BUFFER_SIZE=259
     STANDARD_APP_SYNC_RAPDU
-    HAVE_GENERIC_TX_PARSER
-    HAVE_TRUSTED_NAME
-    HAVE_DYN_MEM_ALLOC
     HAVE_SWAP
-    HAVE_ENUM_VALUE
-    HAVE_NFT_SUPPORT
-    HAVE_DYNAMIC_NETWORKS
+    HAVE_TRANSACTION_CHECKS
+    HAVE_SAFE_ACCOUNT
     explicit_bzero=bzero # Fix for https://github.com/google/sanitizers/issues/1507
 )
 
@@ -178,29 +178,44 @@ include_directories(
   ${CMAKE_SOURCE_DIR}/../../ethereum-plugin-sdk/src/
   ${CMAKE_SOURCE_DIR}/../../src
   ${CMAKE_SOURCE_DIR}/../../src_features/generic_tx_parser/
+  ${CMAKE_SOURCE_DIR}/../../src_features/getPublicKey/
   ${CMAKE_SOURCE_DIR}/../../src_features/provide_enum_value/
-  ${CMAKE_SOURCE_DIR}/../../src_features/provideDynamicNetwork/
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_network_info/
   ${CMAKE_SOURCE_DIR}/../../src_features/signTx/
-  ${CMAKE_SOURCE_DIR}/../../src_features/provideTrustedName/
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_trusted_name/
   ${CMAKE_SOURCE_DIR}/../../src_features/getChallenge/
   ${CMAKE_SOURCE_DIR}/../../src_features/signMessageEIP712/
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_proxy_info/
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_tx_simulation/
+  ${CMAKE_SOURCE_DIR}/../../src_features/signAuthorizationEIP7702/
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_safe_account/
+  ${CMAKE_SOURCE_DIR}/../../src_nbgl/
   ${BOLOS_SDK}/include
   ${BOLOS_SDK}/target/${TARGET_DEVICE}/include
+  ${BOLOS_SDK}/io/include
+  ${BOLOS_SDK}/io_legacy/include
   ${BOLOS_SDK}/lib_cxng/include
   ${BOLOS_SDK}/lib_cxng/src
   ${BOLOS_SDK}/lib_ux_nbgl
   ${BOLOS_SDK}/lib_nbgl/include
   ${BOLOS_SDK}/lib_standard_app/
+  ${BOLOS_SDK}/lib_alloc/
   ${CMAKE_SOURCE_DIR}/src/
 )
 
 FILE(GLOB_RECURSE SOURCES
   ${CMAKE_SOURCE_DIR}/../../src_features/generic_tx_parser/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provideTrustedName/*.c
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_trusted_name/*.c
   ${CMAKE_SOURCE_DIR}/../../src_features/getChallenge/*.c
   ${CMAKE_SOURCE_DIR}/../../src_features/provide_enum_value/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provideDynamicNetwork/*.c
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_network_info/*.c
   ${CMAKE_SOURCE_DIR}/../../src_features/provideNFTInformation/*.c
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_proxy_info/*.c
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_tx_simulation/*.c
+  ${CMAKE_SOURCE_DIR}/../../src_features/signAuthorizationEIP7702/*.c
+  ${CMAKE_SOURCE_DIR}/../../src_features/provide_safe_account/*.c
+  ${CMAKE_SOURCE_DIR}/../../src/list.c
+  ${CMAKE_SOURCE_DIR}/../../src_nbgl/ui_utils.c
   ${CMAKE_SOURCE_DIR}/../../src/mem.c
   ${CMAKE_SOURCE_DIR}/../../src/mem_utils.c
   ${CMAKE_SOURCE_DIR}/../../src/network.c

@@ -1,10 +1,9 @@
-#ifdef HAVE_GENERIC_TX_PARSER
-
 #include "gtp_param_amount.h"
 #include "network.h"
 #include "common_utils.h"
 #include "gtp_field_table.h"
 #include "shared_context.h"
+#include "tx_ctx.h"
 
 enum {
     TAG_VERSION = 0x00,
@@ -53,7 +52,8 @@ bool format_param_amount(const s_param_amount *param, const char *name) {
     size_t buf_size = sizeof(strings.tmp.tmp);
 
     if ((ret = value_get(&param->value, &collec))) {
-        chain_id = get_tx_chain_id();
+        if (get_current_tx_info() == NULL) return false;
+        chain_id = get_current_tx_info()->chain_id;
         ticker = get_displayable_ticker(&chain_id, chainConfig);
         for (int i = 0; i < collec.size; ++i) {
             if (!(ret = amountToString(collec.value[i].ptr,
@@ -72,5 +72,3 @@ bool format_param_amount(const s_param_amount *param, const char *name) {
     value_cleanup(&param->value, &collec);
     return ret;
 }
-
-#endif  // HAVE_GENERIC_TX_PARSER

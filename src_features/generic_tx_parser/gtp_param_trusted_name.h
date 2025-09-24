@@ -1,13 +1,12 @@
-#ifndef GTP_PARAM_TRUSTED_NAME_H_
-#define GTP_PARAM_TRUSTED_NAME_H_
-
-#ifdef HAVE_TRUSTED_NAME
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
 #include "tlv.h"
 #include "gtp_value.h"
 #include "trusted_name.h"
+
+#define MAX_SENDER_ADDRS 3
 
 typedef struct {
     uint8_t version;
@@ -16,6 +15,8 @@ typedef struct {
     e_name_type types[TN_TYPE_COUNT];
     uint8_t source_count;
     e_name_source sources[TN_SOURCE_COUNT];
+    uint8_t sender_addr_count;
+    uint8_t sender_addr[MAX_SENDER_ADDRS][ADDRESS_LENGTH];
 } s_param_trusted_name;
 
 typedef struct {
@@ -25,7 +26,3 @@ typedef struct {
 bool handle_param_trusted_name_struct(const s_tlv_data *data,
                                       s_param_trusted_name_context *context);
 bool format_param_trusted_name(const s_param_trusted_name *param, const char *name);
-
-#endif
-
-#endif  // !GTP_PARAM_TRUSTED_NAME_H_

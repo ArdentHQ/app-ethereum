@@ -5,7 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
-## [1.16.0](../../compare/1.15.0...1.16.0) - 2025-xx-xx
+## [1.19.0](../../compare/1.18.1...1.19.0) - 2025-xx-xx
+
+## [1.18.1](../../compare/1.18.0...1.18.1) - 2025-08-27
+
+### Fixed
+
+- Crash with long clickable trusted names on Nano devices (SDK update)
+
+## [1.18.0](../../compare/1.17.0...1.18.0) - 2025-08-05
+
+### Added
+
+- (clone) Sonic
+- (network) HyperEVM
+- New setting to see TX hash / EIP-712 domain & message hashes even while clear-signing
+- The resolved address can now be checked when an ENS is displayed
+
+### Fixed
+
+- Proxy implementation (spec alignment)
+
+### Changed
+
+- Overall UI changes on Nano devices (with the migration to NBGL)
+- EIP-191 flow no longer uses streaming
+- Renamed EIP-7702 contract `MetaMask Delegation` to `MetaMask Gator`
+
+## [1.17.0](../../compare/1.16.0...1.17.0) - 2025-05-05
+
+### Added
+
+- EIP-7702 authorization signing
+- Type 4 transaction signing
+
+### Changed
+
+- Datetime formatter now supports `Unlimited` (for things that are not meant to expire)
+- Some TX check screens now play a sound (Flex / Stax)
+
+### Removed
+
+- Nano S support
+
+## [1.16.0](../../compare/1.15.0...1.16.0) - 2025-04-28
+
+### Added
+
+- (network) Berachain
+- Transaction check
+- Support for proxy contract clear-signing
+- New clear-signing formatter for token ticker (without an amount)
+
+### Changed
+
+- The calldata is now compressed in RAM, enabling the support of even larger transactions
+- Fixed values of trusted names key IDs
+- Improved error handling with plugins
+- Moved button to see contract info to the first key-value pair (Flex/Stax)
 
 ## [1.15.0](../../compare/1.14.0...1.15.0) - 2025-01-30
 

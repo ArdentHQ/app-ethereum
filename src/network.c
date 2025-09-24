@@ -1,9 +1,10 @@
 #include "os_utils.h"
 #include "os_pic.h"
 #include "network.h"
-#include "network_dynamic.h"
+#include "network_info.h"
 #include "shared_context.h"
 #include "common_utils.h"
+#include "apdu_constants.h"
 
 const char g_unknown_ticker[] = "???";
 
@@ -49,6 +50,7 @@ static const network_info_t NETWORK_MAPPING[] = {
     {.chain_id = 592, .name = "Astar", .ticker = "ASTR"},
     {.chain_id = 888, .name = "Wanchain", .ticker = "WAN"},
     {.chain_id = 943, .name = "PulseChain Testnet", .ticker = "tPLS"},
+    {.chain_id = 999, .name = "HyperEVM", .ticker = "HYPE"},
     {.chain_id = 1030, .name = "Conflux", .ticker = "CFX"},
     {.chain_id = 1088, .name = "Metis Andromeda", .ticker = "METIS"},
     {.chain_id = 1101, .name = "Polygon zkEVM", .ticker = "ETH"},
@@ -95,6 +97,7 @@ static const network_info_t NETWORK_MAPPING[] = {
     {.chain_id = 62320, .name = "Celo Baklava", .ticker = "bCELO"},
     {.chain_id = 62621, .name = "Multivac", .ticker = "MTV"},
     {.chain_id = 73799, .name = "Volta", .ticker = "VOLTA"},
+    {.chain_id = 80094, .name = "Berachain", .ticker = "BERA"},
     {.chain_id = 81457, .name = "Blast", .ticker = "ETH"},
     {.chain_id = 84532, .name = "Base Sepolia", .ticker = "ETH"},
     {.chain_id = 153153, .name = "Odyssey Chain", .ticker = "DIONE"},
@@ -122,15 +125,15 @@ static const network_info_t NETWORK_MAPPING[] = {
 
 static const network_info_t *get_network_from_chain_id(const uint64_t *chain_id) {
     if (*chain_id != 0) {
-#ifdef HAVE_DYNAMIC_NETWORKS
         // Look if the network is available
         for (size_t i = 0; i < MAX_DYNAMIC_NETWORKS; i++) {
-            if (DYNAMIC_NETWORK_INFO[i].chain_id == *chain_id) {
-                PRINTF("[NETWORK] - Found dynamic %s\n", DYNAMIC_NETWORK_INFO[i].name);
-                return (const network_info_t *) &DYNAMIC_NETWORK_INFO[i];
+            if ((DYNAMIC_NETWORK_INFO[i]) && (DYNAMIC_NETWORK_INFO[i]->chain_id == *chain_id)) {
+                PRINTF("[NETWORK] - Found dynamic \"%s\" in slot %u\n",
+                       DYNAMIC_NETWORK_INFO[i]->name,
+                       i);
+                return (const network_info_t *) DYNAMIC_NETWORK_INFO[i];
             }
         }
-#endif  // HAVE_DYNAMIC_NETWORKS
 
         // Fallback to hardcoded table
         for (size_t i = 0; i < ARRAYLEN(NETWORK_MAPPING); i++) {
@@ -151,6 +154,22 @@ const char *get_network_name_from_chain_id(const uint64_t *chain_id) {
         return NULL;
     }
     return PIC(net->name);
+}
+
+uint16_t get_network_as_string(char *out, size_t out_size) {
+    uint64_t chain_id = get_tx_chain_id();
+    const char *name = get_network_name_from_chain_id(&chain_id);
+
+    if (name == NULL) {
+        // No network name found so simply copy the chain ID as the network name.
+        if (!u64_to_string(chain_id, out, out_size)) {
+            return APDU_RESPONSE_CHAINID_OUT_BUF_SMALL;
+        }
+    } else {
+        // Network name found, simply copy it.
+        strlcpy(out, name, out_size);
+    }
+    return APDU_RESPONSE_OK;
 }
 
 const char *get_network_ticker_from_chain_id(const uint64_t *chain_id) {
@@ -176,6 +195,7 @@ uint64_t get_tx_chain_id(void) {
             break;
         case EIP2930:
         case EIP1559:
+        case EIP7702:
             chain_id = u64_from_BE(tmpContent.txContent.chainID.value,
                                    tmpContent.txContent.chainID.length);
             break;

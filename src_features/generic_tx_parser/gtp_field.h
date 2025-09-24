@@ -1,5 +1,4 @@
-#ifndef GTP_FIELD_H_
-#define GTP_FIELD_H_
+#pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,6 +12,9 @@
 #include "gtp_param_unit.h"
 #include "gtp_param_enum.h"
 #include "gtp_param_trusted_name.h"
+#include "gtp_param_calldata.h"
+#include "gtp_param_token.h"
+#include "list.h"
 
 typedef enum {
     PARAM_TYPE_RAW = 0,
@@ -24,6 +26,8 @@ typedef enum {
     PARAM_TYPE_UNIT,
     PARAM_TYPE_ENUM,
     PARAM_TYPE_TRUSTED_NAME,
+    PARAM_TYPE_CALLDATA,
+    PARAM_TYPE_TOKEN,
 } e_param_type;
 
 typedef struct {
@@ -34,18 +38,14 @@ typedef struct {
         s_param_raw param_raw;
         s_param_amount param_amount;
         s_param_token_amount param_token_amount;
-#ifdef HAVE_NFT_SUPPORT
         s_param_nft param_nft;
-#endif
         s_param_datetime param_datetime;
         s_param_duration param_duration;
         s_param_unit param_unit;
-#ifdef HAVE_ENUM_VALUE
         s_param_enum param_enum;
-#endif
-#ifdef HAVE_TRUSTED_NAME
         s_param_trusted_name param_trusted_name;
-#endif
+        s_param_calldata param_calldata;
+        s_param_token param_token;
     };
 } s_field;
 
@@ -57,5 +57,3 @@ typedef struct {
 bool handle_field_struct(const s_tlv_data *data, s_field_ctx *context);
 bool verify_field_struct(const s_field_ctx *context);
 bool format_field(const s_field *field);
-
-#endif  // !GTP_FIELD_H_

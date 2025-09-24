@@ -1,33 +1,24 @@
 import hashlib
 import json
 import re
-import signal
-import sys
 import copy
-from typing import Any, Callable, Optional, Union
+from typing import Any, Optional, Union, Callable
 import struct
-
-from ragger.firmware import Firmware
+import functools
 
 from client import keychain
 from client.client import EthAppClient, EIP712FieldType
-from client.client import PKIPubKeyUsage
+from client.ledger_pki import PKIPubKeyUsage
+from client.status_word import StatusWord
 
 
 # global variables
 app_client: EthAppClient = None
 filtering_paths: dict = {}
 filtering_tokens: list[dict] = []
+filtering_calldatas: list[dict] = []
 current_path: list[str] = []
 sig_ctx: dict[str, Any] = {}
-
-
-def default_handler():
-    raise RuntimeError("Uninitialized handler")
-
-
-autonext_handler: Callable = default_handler
-is_golden_run: bool
 
 
 # From a string typename, extract the type and all the array depth
@@ -121,6 +112,11 @@ def send_struct_def_field(typename, keyname):
                                                         array_lvls,
                                                         keyname):
         pass
+
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending field def {keyname} of type {typename}: {response.status}"
+
     return (typename, type_enum, typesize, array_lvls)
 
 
@@ -200,14 +196,17 @@ def send_filtering_token(token_idx: int):
     if len(filtering_tokens[token_idx]) > 0:
         token = filtering_tokens[token_idx]
         if not token["sent"]:
-            app_client.provide_token_metadata(token["ticker"],
-                                              bytes.fromhex(token["addr"][2:]),
-                                              token["decimals"],
-                                              token["chain_id"])
+            response = app_client.provide_token_metadata(token["ticker"],
+                                                         bytes.fromhex(token["addr"][2:]),
+                                                         token["decimals"],
+                                                         token["chain_id"])
+            assert response.status == StatusWord.OK, \
+                f"Error sending token metadata for {token['ticker']}: {response.status}"
             token["sent"] = True
 
 
-def send_filter(path: str, discarded: bool):
+def send_filter(path: str, discarded: bool) -> Optional[Callable]:
+    ret: Optional[Callable] = None
     assert path in filtering_paths.keys()
 
     if filtering_paths[path]["type"].startswith("amount_join_"):
@@ -233,26 +232,67 @@ def send_filter(path: str, discarded: bool):
                                     filtering_paths[path]["tn_type"],
                                     filtering_paths[path]["tn_source"],
                                     discarded)
+    elif filtering_paths[path]["type"].startswith("calldata_"):
+        calldata_index = filtering_paths[path]["index"]
+        for calldata in filtering_calldatas:
+            if calldata["index"] == calldata_index:
+                if not calldata["sent"]:
+                    send_filtering_calldata_info(calldata["index"],
+                                                 calldata["value_flag"],
+                                                 calldata["callee_flag"],
+                                                 calldata["chain_id_flag"],
+                                                 calldata["selector_flag"],
+                                                 calldata["amount_flag"],
+                                                 calldata["spender_flag"])
+                    calldata["sent"] = True
+                break
+        if filtering_paths[path]["type"].endswith("_value"):
+            send_filtering_calldata_value(path, calldata_index, discarded)
+        elif filtering_paths[path]["type"].endswith("_callee"):
+            send_filtering_calldata_callee(path, calldata_index, discarded)
+        elif filtering_paths[path]["type"].endswith("_chain_id"):
+            send_filtering_calldata_chain_id(path, calldata_index, discarded)
+        elif filtering_paths[path]["type"].endswith("_selector"):
+            send_filtering_calldata_selector(path, calldata_index, discarded)
+        elif filtering_paths[path]["type"].endswith("_amount"):
+            send_filtering_calldata_amount(path, calldata_index, discarded)
+        elif filtering_paths[path]["type"].endswith("_spender"):
+            send_filtering_calldata_spender(path, calldata_index, discarded)
+        else:
+            assert False
+        calldata["path_count"] -= 1
+        if calldata["path_count"] == 0:
+            ret = calldata["handler"]
     elif filtering_paths[path]["type"] == "raw":
         send_filtering_raw(path, filtering_paths[path]["name"], discarded)
     else:
         assert False
+
+    return ret
 
 
 def send_struct_impl_field(value, field):
     assert not isinstance(value, list)
     assert field["enum"] != EIP712FieldType.CUSTOM
 
+    callback: Optional[Callable] = None
+
     data = encoding_functions[field["enum"]](value, field["typesize"])
 
     if filtering_paths:
         path = ".".join(current_path)
         if path in filtering_paths.keys():
-            send_filter(path, False)
+            callback = send_filter(path, False)
 
     with app_client.eip712_send_struct_impl_struct_field(data):
-        enable_autonext()
-    disable_autonext()
+        pass
+
+    if callback is not None:
+        callback()
+
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending field {field['name']} of type {field['type']}: {response.status}"
 
 
 def evaluate_field(structs, data, field, lvls_left, new_level=True):
@@ -263,44 +303,42 @@ def evaluate_field(structs, data, field, lvls_left, new_level=True):
     if len(array_lvls) > 0 and lvls_left > 0:
         with app_client.eip712_send_struct_impl_array(len(data)):
             pass
+        response = app_client.response()
+        assert response.status == StatusWord.OK, \
+            f"Error sending array {field['name']} of type {field['type']}: {response.status}"
         if len(data) == 0:
             for path in filtering_paths.keys():
                 dpath = ".".join(current_path) + ".[]"
                 if path.startswith(dpath):
-                    app_client.eip712_filtering_discarded_path(path)
+                    response = app_client.eip712_filtering_discarded_path(path)
+                    assert response.status == StatusWord.OK, \
+                        f"Error sending discarded path {path}: {response.status}"
                     send_filter(path, True)
         idx = 0
         for subdata in data:
             current_path.append("[]")
-            if not evaluate_field(structs, subdata, field, lvls_left - 1, False):
-                return False
+            evaluate_field(structs, subdata, field, lvls_left - 1, False)
             current_path.pop()
             idx += 1
         if array_lvls[lvls_left - 1] is not None:
-            if array_lvls[lvls_left - 1] != idx:
-                print(f"Mismatch in array size! Got {idx}, expected {array_lvls[lvls_left - 1]}\n",
-                      file=sys.stderr)
-                return False
+            assert array_lvls[lvls_left - 1] == idx, \
+                f"Mismatch in array size! Got {idx}, expected {array_lvls[lvls_left - 1]}"
     else:
         if field["enum"] == EIP712FieldType.CUSTOM:
-            if not send_struct_impl(structs, data, field["type"]):
-                return False
+            send_struct_impl(structs, data, field["type"])
         else:
             send_struct_impl_field(data, field)
     if new_level:
         current_path.pop()
-    return True
 
 
 def send_struct_impl(structs, data, structname):
     # Check if it is a struct we don't known
-    if structname not in structs.keys():
-        return False
+    assert structname in structs.keys(), \
+        f"Unknown struct {structname} in types definition"
 
     for f in structs[structname]:
-        if not evaluate_field(structs, data[f["name"]], f, len(f["array_lvls"])):
-            return False
-    return True
+        evaluate_field(structs, data[f["name"]], f, len(f["array_lvls"]))
 
 
 def start_signature_payload(ctx: dict, magic: int) -> bytearray:
@@ -322,8 +360,10 @@ def send_filtering_message_info(display_name: str, filters_count: int):
 
     sig = keychain.sign_data(keychain.Key.CAL, to_sign)
     with app_client.eip712_filtering_message_info(display_name, filters_count, sig):
-        enable_autonext()
-    disable_autonext()
+        pass
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering message info for {display_name}: {response.status}"
 
 
 def send_filtering_amount_join_token(path: str, token_idx: int, discarded: bool):
@@ -333,6 +373,9 @@ def send_filtering_amount_join_token(path: str, token_idx: int, discarded: bool)
     sig = keychain.sign_data(keychain.Key.CAL, to_sign)
     with app_client.eip712_filtering_amount_join_token(token_idx, sig, discarded):
         pass
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering amount join token for {path} with token index {token_idx}: {response.status}"
 
 
 def send_filtering_amount_join_value(path: str, token_idx: int, display_name: str, discarded: bool):
@@ -343,6 +386,9 @@ def send_filtering_amount_join_value(path: str, token_idx: int, display_name: st
     sig = keychain.sign_data(keychain.Key.CAL, to_sign)
     with app_client.eip712_filtering_amount_join_value(token_idx, display_name, sig, discarded):
         pass
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering amount join value for {path} with token index {token_idx}: {response.status}"
 
 
 def send_filtering_datetime(path: str, display_name: str, discarded: bool):
@@ -352,6 +398,9 @@ def send_filtering_datetime(path: str, display_name: str, discarded: bool):
     sig = keychain.sign_data(keychain.Key.CAL, to_sign)
     with app_client.eip712_filtering_datetime(display_name, sig, discarded):
         pass
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering datetime for {path}: {response.status}"
 
 
 def send_filtering_trusted_name(path: str,
@@ -369,6 +418,97 @@ def send_filtering_trusted_name(path: str,
     sig = keychain.sign_data(keychain.Key.CAL, to_sign)
     with app_client.eip712_filtering_trusted_name(display_name, name_type, name_source, sig, discarded):
         pass
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering trusted name for {path}: {response.status}"
+
+
+def send_filtering_calldata_info(index: int,
+                                 value_filter_flag: bool,
+                                 callee_filter_flag: int,
+                                 chain_id_filter_flag: bool,
+                                 selector_filter_flag: bool,
+                                 amount_filter_flag: bool,
+                                 spender_filter_flag: int):
+    to_sign = start_signature_payload(sig_ctx, 55)
+    to_sign.append(index)
+    to_sign.append(value_filter_flag)
+    to_sign.append(int(callee_filter_flag))
+    to_sign.append(chain_id_filter_flag)
+    to_sign.append(selector_filter_flag)
+    to_sign.append(amount_filter_flag)
+    to_sign.append(int(spender_filter_flag))
+    sig = keychain.sign_data(keychain.Key.CAL, to_sign)
+    response = app_client.eip712_filtering_calldata_info(index,
+                                                         value_filter_flag,
+                                                         callee_filter_flag,
+                                                         chain_id_filter_flag,
+                                                         selector_filter_flag,
+                                                         amount_filter_flag,
+                                                         spender_filter_flag,
+                                                         sig)
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering calldata info : {response.status}"
+
+
+def send_filtering_calldata_value(path: str, index: int, discarded: bool):
+    to_sign = start_signature_payload(sig_ctx, 66)
+    to_sign += path.encode()
+    to_sign.append(index)
+    sig = keychain.sign_data(keychain.Key.CAL, to_sign)
+    response = app_client.eip712_filtering_calldata_value(index, sig, discarded)
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering calldata value for {path}: {response.status}"
+
+
+def send_filtering_calldata_callee(path: str, index: int, discarded: bool):
+    to_sign = start_signature_payload(sig_ctx, 77)
+    to_sign += path.encode()
+    to_sign.append(index)
+    sig = keychain.sign_data(keychain.Key.CAL, to_sign)
+    response = app_client.eip712_filtering_calldata_callee(index, sig, discarded)
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering calldata callee for {path}: {response.status}"
+
+
+def send_filtering_calldata_chain_id(path: str, index: int, discarded: bool):
+    to_sign = start_signature_payload(sig_ctx, 88)
+    to_sign += path.encode()
+    to_sign.append(index)
+    sig = keychain.sign_data(keychain.Key.CAL, to_sign)
+    response = app_client.eip712_filtering_calldata_chain_id(index, sig, discarded)
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering calldata callee for {path}: {response.status}"
+
+
+def send_filtering_calldata_selector(path: str, index: int, discarded: bool):
+    to_sign = start_signature_payload(sig_ctx, 99)
+    to_sign += path.encode()
+    to_sign.append(index)
+    sig = keychain.sign_data(keychain.Key.CAL, to_sign)
+    response = app_client.eip712_filtering_calldata_selector(index, sig, discarded)
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering calldata callee for {path}: {response.status}"
+
+
+def send_filtering_calldata_amount(path: str, index: int, discarded: bool):
+    to_sign = start_signature_payload(sig_ctx, 110)
+    to_sign += path.encode()
+    to_sign.append(index)
+    sig = keychain.sign_data(keychain.Key.CAL, to_sign)
+    response = app_client.eip712_filtering_calldata_amount(index, sig, discarded)
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering calldata callee for {path}: {response.status}"
+
+
+def send_filtering_calldata_spender(path: str, index: int, discarded: bool):
+    to_sign = start_signature_payload(sig_ctx, 121)
+    to_sign += path.encode()
+    to_sign.append(index)
+    sig = keychain.sign_data(keychain.Key.CAL, to_sign)
+    response = app_client.eip712_filtering_calldata_spender(index, sig, discarded)
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering calldata callee for {path}: {response.status}"
 
 
 # ledgerjs doesn't actually sign anything, and instead uses already pre-computed signatures
@@ -379,11 +519,15 @@ def send_filtering_raw(path: str, display_name: str, discarded: bool):
     sig = keychain.sign_data(keychain.Key.CAL, to_sign)
     with app_client.eip712_filtering_raw(display_name, sig, discarded):
         pass
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending filtering raw for {path}: {response.status}"
 
 
-def prepare_filtering(filtr_data):
+def prepare_filtering(data_json, filtr_data):
     global filtering_paths
     global filtering_tokens
+    global filtering_calldatas
 
     if "fields" in filtr_data:
         filtering_paths = filtr_data["fields"]
@@ -398,6 +542,21 @@ def prepare_filtering(filtr_data):
     else:
         filtering_tokens = []
 
+    if "calldatas" in filtr_data:
+        filtering_calldatas = filtr_data["calldatas"]
+        for calldata in filtering_calldatas:
+            calldata["sent"] = False
+            calldata["path_count"] = 0
+            for path in filtering_paths.values():
+                if path["type"].startswith("calldata_"):
+                    if path["index"] == calldata["index"]:
+                        calldata["path_count"] += 1
+            if "handler" in calldata:
+                if calldata["handler"] is not None:
+                    calldata["handler"] = functools.partial(calldata["handler"], app_client, data_json)
+            else:
+                calldata["handler"] = None
+
 
 def handle_optional_domain_values(domain):
     if "chainId" not in domain.keys():
@@ -406,9 +565,12 @@ def handle_optional_domain_values(domain):
         domain["verifyingContract"] = "0x0000000000000000000000000000000000000000"
 
 
-def init_signature_context(types, domain):
+def init_signature_context(types, domain, filters):
     handle_optional_domain_values(domain)
-    caddr = domain["verifyingContract"]
+    if "address" in filters:
+        caddr = filters["address"]
+    else:
+        caddr = domain["verifyingContract"]
     if caddr.startswith("0x"):
         caddr = caddr[2:]
     sig_ctx["caddr"] = bytearray.fromhex(caddr)
@@ -417,42 +579,24 @@ def init_signature_context(types, domain):
     for i in range(8):
         sig_ctx["chainid"].append(chainid & (0xff << (i * 8)))
     sig_ctx["chainid"].reverse()
+
+    # Order type fields
+    for type_name in types.keys():
+        for i in range(len(types[type_name])):
+            types[type_name][i] = dict(sorted(types[type_name][i].items()))
+
     schema_str = json.dumps(types).replace(" ", "")
     schema_hash = hashlib.sha224(schema_str.encode())
     sig_ctx["schema_hash"] = bytearray.fromhex(schema_hash.hexdigest())
 
 
-def next_timeout(_signum: int, _frame):
-    autonext_handler()
-
-
-def enable_autonext():
-    if app_client._client.firmware in (Firmware.STAX, Firmware.FLEX):
-        delay = 1/3
-    else:
-        delay = 1/4
-
-    # golden run has to be slower to make sure we take good snapshots
-    # and not processing/loading screens
-    if is_golden_run:
-        delay *= 3
-
-    signal.setitimer(signal.ITIMER_REAL, delay, delay)
-
-
-def disable_autonext():
-    signal.setitimer(signal.ITIMER_REAL, 0, 0)
-
-
 def process_data(aclient: EthAppClient,
                  data_json: dict,
-                 filters: Optional[dict] = None,
-                 autonext: Optional[Callable] = None,
-                 golden_run: bool = False) -> bool:
+                 filters: Optional[dict] = None) -> None:
     global app_client
-    global autonext_handler
-    global is_golden_run
+    global current_path
 
+    current_path = []
     # deepcopy because this function modifies the dict
     data_json = copy.deepcopy(data_json)
     app_client = aclient
@@ -462,19 +606,16 @@ def process_data(aclient: EthAppClient,
     domain = data_json["domain"]
     message = data_json["message"]
 
-    if autonext:
-        autonext_handler = autonext
-        signal.signal(signal.SIGALRM, next_timeout)
-
-    is_golden_run = golden_run
-
     if filters:
-        init_signature_context(types, domain)
+        init_signature_context(types, domain, filters)
 
     # send types definition
     for key in types.keys():
         with app_client.eip712_send_struct_def_struct_name(key):
             pass
+        response = app_client.response()
+        assert response.status == StatusWord.OK, \
+            f"Error sending struct def {key}: {response.status}"
         for f in types[key]:
             (f["type"], f["enum"], f["typesize"], f["array_lvls"]) = \
              send_struct_def_field(f["type"], f["name"])
@@ -482,33 +623,21 @@ def process_data(aclient: EthAppClient,
     if filters:
         with app_client.eip712_filtering_activate():
             pass
-        prepare_filtering(filters)
+        response = app_client.response()
+        assert response.status == StatusWord.OK, \
+            f"Error activating filtering: {response.status}"
+        prepare_filtering(data_json, filters)
 
-    if aclient._pki_client is None:
-        print(f"Ledger-PKI Not supported on '{aclient._firmware.name}'")
-    else:
-        # pylint: disable=line-too-long
-        if aclient._firmware == Firmware.NANOSP:
-            cert_apdu = "0101010201021004010200001104000000021201001302000214010116040000000020104549503731325f46696c746572696e67300200053101083201213321024cca8fad496aa5040a00a7eb2f5cc3b85376d88ba147a7d7054a99c64056188734010135010315473045022100ef197e5b1cabb3de5dfc62f965db8536b0463d272c6fea38ebc73605715b1df9022017bef619d52a9728b37a9b5a33f0143bcdcc714694eed07c326796ffbb7c2958"  # noqa: E501
-        elif aclient._firmware == Firmware.NANOX:
-            cert_apdu = "0101010201021104000000021201001302000214010116040000000020104549503731325F46696C746572696E67300200053101083201213321024CCA8FAD496AA5040A00A7EB2F5CC3B85376D88BA147A7D7054A99C64056188734010135010215473045022100E07E129B0DC2A571D5205C3DB43BF4BB3463A2E9D2A4EEDBEC8FD3518CC5A95902205F80306EEF785C4D45BDCA1F25394A1341571BD1921C2740392DD22EB1ACDD8B"  # noqa: E501
-        elif aclient._firmware == Firmware.STAX:
-            cert_apdu = "0101010201021104000000021201001302000214010116040000000020104549503731325F46696C746572696E67300200053101083201213321024CCA8FAD496AA5040A00A7EB2F5CC3B85376D88BA147A7D7054A99C6405618873401013501041546304402204EA7B30F0EEFEF25FAB3ADDA6609E25296C41DD1C5969A92FAE6B600AAC2902E02206212054E123F5F965F787AE7EE565E243F21B11725626D3FF058522D6BDCD995"  # noqa: E501
-        elif aclient._firmware == Firmware.FLEX:
-            cert_apdu = "0101010201021104000000021201001302000214010116040000000020104549503731325F46696C746572696E67300200053101083201213321024CCA8FAD496AA5040A00A7EB2F5CC3B85376D88BA147A7D7054A99C6405618873401013501051546304402205FB5E970065A95C57F00FFA3964946251815527613724ED6745C37E303934BE702203CC9F4124B42806F0A7CA765CFAB5AADEB280C35AB8F809FC49ADC97D9B9CE15"  # noqa: E501
-        else:
-            print(f"Invalid device '{aclient._firmware.name}'")
-            cert_apdu = ""
-        # pylint: enable=line-too-long
-        if cert_apdu:
-            aclient._pki_client.send_certificate(PKIPubKeyUsage.PUBKEY_USAGE_COIN_META, bytes.fromhex(cert_apdu))
+    # Send ledgerPKI certificate
+    app_client.pki_client.send_certificate(PKIPubKeyUsage.PUBKEY_USAGE_COIN_META)
 
     # send domain implementation
     with app_client.eip712_send_struct_impl_root_struct(domain_typename):
-        enable_autonext()
-    disable_autonext()
-    if not send_struct_impl(types, domain, domain_typename):
-        return False
+        pass
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending domain root struct {domain_typename}: {response.status}"
+    send_struct_impl(types, domain, domain_typename)
 
     if filters:
         if filters and "name" in filters:
@@ -518,9 +647,8 @@ def process_data(aclient: EthAppClient,
 
     # send message implementation
     with app_client.eip712_send_struct_impl_root_struct(message_typename):
-        enable_autonext()
-    disable_autonext()
-    if not send_struct_impl(types, message, message_typename):
-        return False
-
-    return True
+        pass
+    response = app_client.response()
+    assert response.status == StatusWord.OK, \
+        f"Error sending message root struct {message_typename}: {response.status}"
+    send_struct_impl(types, message, message_typename)

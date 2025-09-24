@@ -1,7 +1,4 @@
-#ifndef FILTERING_H_
-#define FILTERING_H_
-
-#ifdef HAVE_EIP712_FULL_SUPPORT
+#pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -9,6 +6,31 @@
 #define MAX_FILTERS 50
 
 bool filtering_message_info(const uint8_t *payload, uint8_t length);
+bool filtering_calldata_spender(const uint8_t *payload,
+                                uint8_t length,
+                                bool discarded,
+                                uint32_t *path_crc);
+bool filtering_calldata_amount(const uint8_t *payload,
+                               uint8_t length,
+                               bool discarded,
+                               uint32_t *path_crc);
+bool filtering_calldata_selector(const uint8_t *payload,
+                                 uint8_t length,
+                                 bool discarded,
+                                 uint32_t *path_crc);
+bool filtering_calldata_chain_id(const uint8_t *payload,
+                                 uint8_t length,
+                                 bool discarded,
+                                 uint32_t *path_crc);
+bool filtering_calldata_callee(const uint8_t *payload,
+                               uint8_t length,
+                               bool discarded,
+                               uint32_t *path_crc);
+bool filtering_calldata_value(const uint8_t *payload,
+                              uint8_t length,
+                              bool discarded,
+                              uint32_t *path_crc);
+bool filtering_calldata_info(const uint8_t *payload, uint8_t length);
 bool filtering_trusted_name(const uint8_t *payload,
                             uint8_t length,
                             bool discarded,
@@ -30,7 +52,3 @@ bool filtering_raw_field(const uint8_t *payload,
                          bool discarded,
                          uint32_t *path_crc);
 bool filtering_discarded_path(const uint8_t *payload, uint8_t length);
-
-#endif  // HAVE_EIP712_FULL_SUPPORT
-
-#endif  // FILTERING_H_

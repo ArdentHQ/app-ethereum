@@ -4,17 +4,19 @@
 #include "eth_plugin_interface.h"
 #include "apdu_constants.h"
 #include "swap_error_code_helpers.h"
-#ifdef HAVE_GENERIC_TX_PARSER
-#include "gtp_tx_info.h"
-#endif
 #include "common_ui.h"
 #include "ui_callbacks.h"
+#include "mem.h"
+#include "mem_utils.h"
+#include "tx_ctx.h"
 
 typedef enum {
     SIGN_MODE_BASIC = 0,
     SIGN_MODE_STORE = 1,
     SIGN_MODE_START_FLOW = 2,
 } e_sign_mode;
+
+cx_sha3_t *g_tx_hash_ctx = NULL;
 
 static uint16_t handle_first_sign_chunk(const uint8_t *payload,
                                         uint8_t length,
@@ -36,7 +38,10 @@ static uint16_t handle_first_sign_chunk(const uint8_t *payload,
     tmpContent.txContent.dataPresent = false;
     dataContext.tokenContext.pluginStatus = ETH_PLUGIN_RESULT_UNAVAILABLE;
 
-    if (init_tx(&txContext, &global_sha3, &tmpContent.txContent, mode == SIGN_MODE_STORE) ==
+    if (mem_buffer_allocate((void **) &g_tx_hash_ctx, sizeof(cx_sha3_t)) == false) {
+        return APDU_RESPONSE_INSUFFICIENT_MEMORY;
+    }
+    if (init_tx(&txContext, g_tx_hash_ctx, &tmpContent.txContent, mode == SIGN_MODE_STORE) ==
         false) {
         return APDU_RESPONSE_INVALID_DATA;
     }
@@ -51,12 +56,13 @@ static uint16_t handle_first_sign_chunk(const uint8_t *payload,
         switch (tx_type) {
             case EIP1559:
             case EIP2930:
+            case EIP7702:
                 break;
             default:
                 PRINTF("Transaction type %d not supported\n", tx_type);
                 return APDU_RESPONSE_TX_TYPE_NOT_SUPPORTED;
         }
-        if (cx_hash_no_throw((cx_hash_t *) &global_sha3, 0, &tx_type, sizeof(tx_type), NULL, 0) !=
+        if (cx_hash_no_throw((cx_hash_t *) g_tx_hash_ctx, 0, &tx_type, sizeof(tx_type), NULL, 0) !=
             CX_OK) {
             return APDU_RESPONSE_INVALID_DATA;
         }
@@ -111,9 +117,7 @@ uint16_t handleSign(uint8_t p1,
 
     switch (p2) {
         case SIGN_MODE_BASIC:
-#ifdef HAVE_GENERIC_TX_PARSER
         case SIGN_MODE_STORE:
-#endif
             switch (p1) {
                 case P1_FIRST:
                     if ((sw = handle_first_sign_chunk(payload, length, &offset, p2)) !=
@@ -131,7 +135,6 @@ uint16_t handleSign(uint8_t p1,
                     return APDU_RESPONSE_INVALID_P1_P2;
             }
             break;
-#ifdef HAVE_GENERIC_TX_PARSER
         case SIGN_MODE_START_FLOW:
             if (appState != APP_STATE_SIGNING_TX) {
                 PRINTF("Signature not initialized\n");
@@ -144,12 +147,15 @@ uint16_t handleSign(uint8_t p1,
                 PRINTF("Error: instructions hash mismatch!\n");
                 return APDU_RESPONSE_INVALID_DATA;
             }
+            if (get_tx_ctx_count() != 1) {
+                PRINTF("Error: remnant unprocessed TX context!\n");
+                return APDU_RESPONSE_CONDITION_NOT_SATISFIED;
+            }
             if (!ui_gcs()) {
                 return APDU_RESPONSE_INTERNAL_ERROR;
             }
             *flags |= IO_ASYNCH_REPLY;
             return APDU_NO_RESPONSE;
-#endif
         default:
             return APDU_RESPONSE_INVALID_P1_P2;
     }
@@ -167,6 +173,9 @@ uint16_t handleSign(uint8_t p1,
         }
     }
     if (sw != APDU_NO_RESPONSE) {
+        if ((sw != APDU_RESPONSE_OK) && (g_tx_hash_ctx != NULL)) {
+            mem_buffer_cleanup((void **) &g_tx_hash_ctx);
+        }
         return sw;
     }
 

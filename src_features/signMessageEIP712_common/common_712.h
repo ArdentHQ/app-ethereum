@@ -1,10 +1,11 @@
-#ifndef COMMON_EIP712_H_
-#define COMMON_EIP712_H_
+#pragma once
 
 #include <stdint.h>
-#include "ux.h"
+#include "ui_logic.h"
 
-unsigned int ui_712_approve_cb();
-unsigned int ui_712_reject_cb();
+void ui_712_start(e_eip712_filtering_mode filtering);
 
-#endif  // COMMON_EIP712_H_
+void eip712_format_hash(uint8_t index);
+
+void ui_712_approve_cb(void);
+void ui_712_reject_cb(void);

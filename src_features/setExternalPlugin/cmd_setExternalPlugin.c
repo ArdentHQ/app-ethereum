@@ -3,9 +3,7 @@
 #include "eth_plugin_interface.h"
 #include "eth_plugin_internal.h"
 #include "plugin_utils.h"
-#ifdef HAVE_LEDGER_PKI
 #include "os_pki.h"
-#endif
 
 uint16_t handleSetExternalPlugin(const uint8_t *workBuffer, uint8_t dataLength) {
     PRINTF("Handling set Plugin\n");
@@ -37,9 +35,7 @@ uint16_t handleSetExternalPlugin(const uint8_t *workBuffer, uint8_t dataLength) 
                                         sizeof(hash),
                                         LEDGER_SIGNATURE_PUBLIC_KEY,
                                         sizeof(LEDGER_SIGNATURE_PUBLIC_KEY),
-#ifdef HAVE_LEDGER_PKI
                                         CERTIFICATE_PUBLIC_KEY_USAGE_COIN_META,
-#endif
                                         (uint8_t *) (workBuffer + payload_size),
                                         dataLength - payload_size);
     if (error != CX_OK) {
@@ -65,6 +61,7 @@ uint16_t handleSetExternalPlugin(const uint8_t *workBuffer, uint8_t dataLength) 
             os_lib_call(params);
         }
         CATCH_OTHER(e) {
+            (void) e;
             PRINTF("%s external plugin is not present\n", dataContext.tokenContext.pluginName);
             memset(dataContext.tokenContext.pluginName,
                    0,

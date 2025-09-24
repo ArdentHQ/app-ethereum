@@ -1,12 +1,14 @@
-#ifdef HAVE_GENERIC_TX_PARSER
-
 #include "os_print.h"
 #include "gtp_value.h"
 #include "gtp_data_path.h"
 #include "shared_context.h"  // txContext
 #include "apdu_constants.h"  // APDU_RESPONSE_OK
-#include "feature_signTx.h"  // get_public_key
+#include "getPublicKey.h"
 #include "gtp_parsed_value.h"
+#include "mem.h"
+#include "mem_utils.h"
+#include "ui_utils.h"
+#include "tx_ctx.h"
 
 enum {
     TAG_VERSION = 0x00,
@@ -104,45 +106,43 @@ bool handle_value_struct(const s_tlv_data *data, s_value_context *context) {
     return ret;
 }
 
-// have to be declared here since it is not stored anywhere else
-static uint8_t from_address[ADDRESS_LENGTH];
-
 bool value_get(const s_value *value, s_parsed_value_collection *collection) {
-    bool ret;
-
     switch (value->source) {
         case SOURCE_CALLDATA:
             collection->size = 0;
-            ret = data_path_get(&value->data_path, collection);
+            if (!data_path_get(&value->data_path, collection)) {
+                return false;
+            }
             break;
 
         case SOURCE_RLP:
             switch (value->container_path) {
                 case CP_FROM:
-                    if ((ret = get_public_key(from_address, sizeof(from_address)) ==
-                               APDU_RESPONSE_OK)) {
-                        collection->value[0].ptr = from_address;
-                        collection->value[0].length = sizeof(from_address);
-                        collection->size = 1;
+                    if (((collection->value[0].ptr = get_current_tx_from())) == NULL) {
+                        return false;
                     }
+                    collection->value[0].length = ADDRESS_LENGTH;
+                    collection->size = 1;
                     break;
 
                 case CP_TO:
-                    collection->value[0].ptr = tmpContent.txContent.destination;
-                    collection->value[0].length = tmpContent.txContent.destinationLength;
+                    if ((collection->value[0].ptr = get_current_tx_to()) == NULL) {
+                        return false;
+                    }
+                    collection->value[0].length = ADDRESS_LENGTH;
                     collection->size = 1;
-                    ret = true;
                     break;
 
                 case CP_VALUE:
-                    collection->value[0].ptr = tmpContent.txContent.value.value;
-                    collection->value[0].length = tmpContent.txContent.value.length;
+                    if ((collection->value[0].ptr = get_current_tx_amount()) == NULL) {
+                        return false;
+                    }
+                    collection->value[0].length = INT256_LENGTH;
                     collection->size = 1;
-                    ret = true;
                     break;
 
                 default:
-                    ret = false;
+                    return false;
             }
             break;
 
@@ -150,13 +150,12 @@ bool value_get(const s_value *value, s_parsed_value_collection *collection) {
             collection->value[0].ptr = value->constant.buf;
             collection->value[0].length = value->constant.size;
             collection->size = 1;
-            ret = true;
             break;
 
         default:
-            ret = false;
+            return false;
     }
-    return ret;
+    return true;
 }
 
 void value_cleanup(const s_value *value, const s_parsed_value_collection *collection) {
@@ -164,5 +163,3 @@ void value_cleanup(const s_value *value, const s_parsed_value_collection *collec
         data_path_cleanup(collection);
     }
 }
-
-#endif  // HAVE_GENERIC_TX_PARSER
