@@ -2,6 +2,8 @@
 
 #include "offsets.h"
 #include "shared_context.h"
+#include "status_words.h"
+#include "parser.h"
 
 #define APP_FLAG_DATA_ALLOWED          0x01
 #define APP_FLAG_EXTERNAL_TOKEN_NEEDED 0x02
@@ -24,8 +26,8 @@
 #define INS_EIP712_STRUCT_DEF               0x1A
 #define INS_EIP712_STRUCT_IMPL              0x1C
 #define INS_EIP712_FILTERING                0x1E
-#define INS_ENS_GET_CHALLENGE               0x20
-#define INS_ENS_PROVIDE_INFO                0x22
+#define INS_GET_CHALLENGE                   0x20
+#define INS_PROVIDE_TRUSTED_NAME            0x22
 #define INS_PROVIDE_ENUM_VALUE              0x24
 #define INS_GTP_TRANSACTION_INFO            0x26
 #define INS_GTP_FIELD                       0x28
@@ -34,6 +36,8 @@
 #define INS_PROVIDE_TX_SIMULATION           0x32
 #define INS_SIGN_EIP7702_AUTHORIZATION      0x34
 #define INS_PROVIDE_SAFE_ACCOUNT            0x36
+#define INS_PROVIDE_GATING                  0x38
+#define INS_PROVIDE_MAP_ENTRY               0x3A
 
 #define INS_STR(x)                                                             \
     (x == INS_GET_PUBLIC_KEY                    ? "GET_PUBLIC_KEY"             \
@@ -51,8 +55,8 @@
      : x == INS_EIP712_STRUCT_DEF               ? "EIP712_STRUCT_DEF"          \
      : x == INS_EIP712_STRUCT_IMPL              ? "EIP712_STRUCT_IMPL"         \
      : x == INS_EIP712_FILTERING                ? "EIP712_FILTERING"           \
-     : x == INS_ENS_GET_CHALLENGE               ? "ENS_GET_CHALLENGE"          \
-     : x == INS_ENS_PROVIDE_INFO                ? "ENS_PROVIDE_INFO"           \
+     : x == INS_GET_CHALLENGE                   ? "GET_CHALLENGE"              \
+     : x == INS_PROVIDE_TRUSTED_NAME            ? "PROVIDE_TRUSTED_NAME"       \
      : x == INS_PROVIDE_ENUM_VALUE              ? "PROVIDE_ENUM_VALUE"         \
      : x == INS_GTP_TRANSACTION_INFO            ? "GTP_TRANSACTION_INFO"       \
      : x == INS_GTP_FIELD                       ? "GTP_FIELD"                  \
@@ -61,92 +65,64 @@
      : x == INS_PROVIDE_TX_SIMULATION           ? "PROVIDE_TX_SIMULATION"      \
      : x == INS_SIGN_EIP7702_AUTHORIZATION      ? "SIGN_EIP7702_AUTHORIZATION" \
      : x == INS_PROVIDE_SAFE_ACCOUNT            ? "PROVIDE_SAFE_ACCOUNT"       \
+     : x == INS_PROVIDE_GATING                  ? "PROVIDE_GATING"             \
+     : x == INS_PROVIDE_MAP_ENTRY               ? "PROVIDE_MAP_ENTRY"          \
                                                 : "Unknown")
-#define P1_CONFIRM              0x01
-#define P1_NON_CONFIRM          0x00
-#define P2_NO_CHAINCODE         0x00
-#define P2_CHAINCODE            0x01
-#define P1_FIRST                0x00
-#define P1_MORE                 0x80
-#define P1_FIRST_CHUNK          0x01
-#define P1_FOLLOWING_CHUNK      0x00
-#define P2_EIP712_LEGACY_IMPLEM 0x00
-#define P2_EIP712_FULL_IMPLEM   0x01
+#define P1_CONFIRM          0x01
+#define P1_NON_CONFIRM      0x00
+#define P2_NO_CHAINCODE     0x00
+#define P2_CHAINCODE        0x01
+#define P1_FIRST            0x00
+#define P1_MORE             0x80
+#define P1_FIRST_CHUNK      0x01
+#define P1_FOLLOWING_CHUNK  0x00
+#define P2_EIP712_V0_IMPLEM 0x00
+#define P2_EIP712_V1_IMPLEM 0x01
 
-#define APDU_NO_RESPONSE                      0x0000
-#define APDU_RESPONSE_MODE_CHECK_FAILED       0x6001
-#define APDU_RESPONSE_TX_TYPE_NOT_SUPPORTED   0x6501
-#define APDU_RESPONSE_CHAINID_OUT_BUF_SMALL   0x6502
-#define APDU_RESPONSE_INTERNAL_ERROR          0x6800
-#define APDU_RESPONSE_SECURITY_NOT_SATISFIED  0x6982
-#define APDU_RESPONSE_WRONG_DATA_LENGTH       0x6983
-#define APDU_RESPONSE_PLUGIN_NOT_INSTALLED    0x6984
-#define APDU_RESPONSE_CONDITION_NOT_SATISFIED 0x6985
-#define APDU_RESPONSE_ERROR_NO_INFO           0x6a00
-#define APDU_RESPONSE_INVALID_DATA            0x6a80
-#define APDU_RESPONSE_INSUFFICIENT_MEMORY     0x6a84
-#define APDU_RESPONSE_REF_DATA_NOT_FOUND      0x6a88
-#define APDU_RESPONSE_FILE_ALREADY_EXIST      0x6a89
-#define APDU_RESPONSE_INVALID_P1_P2           0x6b00
-#define APDU_RESPONSE_INVALID_INS             0x6d00
-#define APDU_RESPONSE_INVALID_CLA             0x6e00
-#define APDU_RESPONSE_UNKNOWN                 0x6f00
-#define APDU_RESPONSE_OK                      0x9000
-#define APDU_RESPONSE_CMD_CODE_NOT_SUPPORTED  0x911c
+#define APDU_RESPONSE_MODE_CHECK_FAILED 0x6001
 
-uint16_t handleGetPublicKey(uint8_t p1,
-                            uint8_t p2,
-                            const uint8_t *dataBuffer,
-                            uint8_t dataLength,
-                            unsigned int *flags,
-                            unsigned int *tx);
-uint16_t handleProvideErc20TokenInformation(const uint8_t *workBuffer,
-                                            uint8_t dataLength,
-                                            unsigned int *tx);
-uint16_t handleProvideNFTInformation(const uint8_t *dataBuffer,
-                                     uint8_t dataLength,
-                                     unsigned int *tx);
-uint16_t handleSign(uint8_t p1,
-                    uint8_t p2,
-                    const uint8_t *dataBuffer,
-                    uint8_t dataLength,
-                    unsigned int *flags);
-uint16_t handleGetAppConfiguration(unsigned int *tx);
-uint16_t handleSignPersonalMessage(uint8_t p1,
-                                   const uint8_t *const payload,
-                                   uint8_t length,
-                                   unsigned int *flags);
-uint16_t handleSignEIP712Message_v0(uint8_t p1,
-                                    const uint8_t *dataBuffer,
-                                    uint8_t dataLength,
-                                    unsigned int *flags);
+uint16_t handle_get_public_key(uint8_t p1,
+                               uint8_t p2,
+                               const uint8_t *dataBuffer,
+                               uint8_t dataLength,
+                               unsigned int *tx);
+uint16_t handle_provide_erc20_token_information(uint8_t p1,
+                                                uint8_t p2,
+                                                uint8_t lc,
+                                                const uint8_t *data,
+                                                unsigned int *tx);
+uint16_t handle_provide_nft_information(uint8_t p1,
+                                        uint8_t p2,
+                                        uint8_t lc,
+                                        const uint8_t *data,
+                                        unsigned int *tx);
+uint16_t handle_sign(uint8_t p1, uint8_t p2, const uint8_t *dataBuffer, uint8_t dataLength);
+uint16_t handle_get_app_configuration(unsigned int *tx);
+uint16_t handle_sign_personal_message(uint8_t p1, const uint8_t *const payload, uint8_t length);
+uint16_t handle_sign_eip712_message_v0(uint8_t p1, const uint8_t *dataBuffer, uint8_t dataLength);
 
-uint16_t handleSetExternalPlugin(const uint8_t *workBuffer, uint8_t dataLength);
+uint16_t handle_set_external_plugin(const uint8_t *workBuffer, uint8_t dataLength);
 
-uint16_t handleSetPlugin(const uint8_t *workBuffer, uint8_t dataLength);
+uint16_t handle_set_plugin(const uint8_t *workBuffer, uint8_t dataLength);
 
-uint16_t handlePerformPrivacyOperation(uint8_t p1,
-                                       uint8_t p2,
-                                       const uint8_t *workBuffer,
-                                       uint8_t dataLength,
-                                       unsigned int *flags,
-                                       unsigned int *tx);
+uint16_t handle_perform_privacy_operation(uint8_t p1,
+                                          uint8_t p2,
+                                          const uint8_t *workBuffer,
+                                          uint8_t dataLength,
+                                          unsigned int *tx);
 
 #ifdef HAVE_ETH2
 
-uint16_t handleGetEth2PublicKey(uint8_t p1,
-                                uint8_t p2,
-                                const uint8_t *dataBuffer,
-                                uint8_t dataLength,
-                                unsigned int *flags,
-                                unsigned int *tx);
+uint16_t handle_get_eth2_public_key(uint8_t p1,
+                                    uint8_t p2,
+                                    const uint8_t *dataBuffer,
+                                    uint8_t dataLength,
+                                    unsigned int *tx);
 
 #endif
 
-uint16_t handle_safe_account(uint8_t p1,
-                             uint8_t p2,
-                             const uint8_t *data,
-                             uint8_t length,
-                             uint32_t *flags);
+uint16_t handle_safe_account(uint8_t p1, uint8_t p2, const uint8_t *data, uint8_t length);
+
+uint16_t handleApdu(command_t *cmd, uint32_t *tx);
 
 extern uint16_t apdu_response_code;

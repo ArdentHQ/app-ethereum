@@ -5,7 +5,146 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
-## [1.19.0](../../compare/1.18.1...1.19.0) - 2025-xx-xx
+## [1.23.0](../../compare/1.22.2...1.23.0) - xxxx-xx-xx
+
+## [1.22.2](../../compare/1.22.1...1.22.2) - 2026-08-12
+
+### Fixed
+
+- Security issues
+
+## [1.22.1](../../compare/1.22.0...1.22.1) - 2026-05-27
+
+### Fixed
+
+- Instability in APDU communication handling
+
+## [1.22.0](../../compare/1.21.3...1.22.0) - 2026-04-10
+
+### Added
+
+- Clear-signing gating support
+
+### Fixed
+
+- EIP-712 message hashing issue
+- Blind-signing bypass for single-byte calldata `0x00` transactions
+- Blind-signing bypass with EIP-712 filtering activation
+
+## [1.21.3](../../compare/1.21.2...1.21.3) - 2026-03-17
+
+### Fixed
+
+- Missing trusted name matching with EIP-712 empty calldata
+
+## [1.21.2](../../compare/1.21.1...1.21.2) - 2026-03-03
+
+### Added
+
+- (clone) Sei
+
+### Fixed
+
+- MAB-sourced trusted names handling
+
+## [1.21.1](../../compare/1.21.0...1.21.1) - 2026-02-19
+
+### Fixed
+
+- Blind-signing of ERC-20 transfer/approve not working
+
+## [1.21.0](../../compare/1.20.1...1.21.0) - 2026-02-16
+
+### Added
+
+- EIP-7002 support
+- EIP-7251 support
+- 45'/* derivation path
+
+### Changed
+
+- Improved handling of native send transactions within a batch transaction
+- Improved handling of ERC-20 extra data
+- Enabled the get safe account feature on Nano S+/X
+- More fields are clickable while clear-signing transactions
+- Shows a network field during EIP-712 clear-signing flow
+
+## [1.20.1](../../compare/1.20.0...1.20.1) - 2025-12-11
+
+### Fixed
+
+- Exchange swap with dynamic networks
+- Crash when clear-signing with the debug contracts setting activated
+
+## [1.20.0](../../compare/1.19.3...1.20.0) - 2025-12-02
+
+### Added
+
+- New separator screens when dealing with batch transactions
+- Can now sign ERC-20 transactions with extra data (and show them)
+- Reintroduced skip button for EIP-712 raw/verbose flow
+- New trusted name type : token
+
+### Changed
+
+- Increased the ticker size to 50 characters
+- Moved ticker from the beginning to the end of displayed amounts
+- Applied wrapping to all key/value UI pairs
+
+### Fixed
+
+- Wrong error codes being sent back, preventing the software wallet to fallback to blind-signing
+- EIP-712 message hashing issue
+- Crash at the end of a clear-signing flow
+- EIP-712 message hash being shown twice on Nano in some configurations
+
+### Removed
+
+- MetaMask Gator from the EIP-7702 whitelist
+- Skip button from EIP-191 flow
+
+## [1.19.3](../../compare/1.19.2...1.19.3) - 2025-10-23
+
+### Changed
+
+- Increased plugin interface to version 7
+- Set ticker after fee
+- Allocate 1k memory for plugins
+
+### Fixed
+
+- Do not check dynamic network in SWAP mode
+
+## [1.19.2](../../compare/1.19.1...1.19.2) - 2025-10-15
+
+### Fixed
+
+- Clear-signing of smart-contract interactions with no clear-signed fields
+- Clear-signing of legacy TX (type 0)
+- Bug where the app could end up in an infinite loop during clear-signing
+- Handling of the smart-account `GET_PUBLIC_KEY` equivalent
+
+## [1.19.1](../../compare/1.19.0...1.19.1) - 2025-09-26
+
+### Fixed
+
+- Crash with empty field values in EIP-712 messages
+
+## [1.19.0](../../compare/1.18.1...1.19.0) - 2025-09-24
+
+### Added
+
+- A smart account `GET_PUBLIC_KEY` equivalent
+- Transaction nested calldata clear-signing
+- EIP-712 calldata clear-signing
+
+### Fixed
+
+- IoTeX icons
+
+### Changed
+
+- EIP-712 flow no longer uses streaming
 
 ## [1.18.1](../../compare/1.18.0...1.18.1) - 2025-08-27
 

@@ -1,235 +1,59 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.20)
 
-# project information
 project(EthereumAppFuzzer
         VERSION 1.0
-	      DESCRIPTION "Eth Fuzzer"
+        DESCRIPTION "Ledger Ethereum App Fuzzer"
         LANGUAGES C)
 
-if (NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
-  message(FATAL_ERROR "Fuzzer needs to be built with Clang")
+if(NOT DEFINED BOLOS_SDK)
+  message(FATAL_ERROR "BOLOS_SDK must be defined")
 endif()
 
-# guard against bad build-type strings
-if (NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE "Debug")
-endif()
+# Exports the `secure_sdk` target and ledger_fuzz_add_app_target().
+include(${BOLOS_SDK}/fuzzing/cmake/LedgerAppFuzz.cmake)
+ledger_fuzz_setup()
 
-# default fuzz device target
-if (NOT TARGET_DEVICE)
-  set(TARGET_DEVICE "flex")
-endif()
+set(APP_SOURCE_DIR ${CMAKE_SOURCE_DIR}/../..)
 
-if (NOT DEFINED BOLOS_SDK)
-  set(BOLOS_SDK /opt/${TARGET_DEVICE}-secure-sdk)
-endif()
+# Whole app plus the plugin SDK and the fuzz mocks; both main.c are replaced by
+# the fuzz entry point. address_book lives in the SDK, so glob it separately.
+file(GLOB_RECURSE C_SOURCES CONFIGURE_DEPENDS
+    ${APP_SOURCE_DIR}/src/*.c
+    ${APP_SOURCE_DIR}/ethereum-plugin-sdk/src/*.c
+    ${CMAKE_SOURCE_DIR}/mock/*.c
+    ${BOLOS_SDK}/app_features/address_book/src/*.c)
+list(REMOVE_ITEM C_SOURCES
+    ${APP_SOURCE_DIR}/src/main.c
+    ${APP_SOURCE_DIR}/ethereum-plugin-sdk/src/main.c)
 
-# some flags to mimic the embedded build (such as packed enums)
-set(CUSTOM_C_FLAGS -fdata-sections -ffunction-sections -funsigned-char -fshort-enums)
+ledger_fuzz_collect_include_dirs(APP_INCLUDE_DIRS
+    ${APP_SOURCE_DIR}/src
+    ${APP_SOURCE_DIR}/ethereum-plugin-sdk/src)
+list(APPEND APP_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/mock)
 
-# compatible with ClusterFuzzLite
-if (NOT DEFINED ENV{LIB_FUZZING_ENGINE})
-	set(COMPILATION_FLAGS ${CUSTOM_C_FLAGS} -g -O0 -Wall -Wextra -fprofile-instr-generate -fcoverage-mapping)
-  if (SANITIZER MATCHES "address")
-    set(COMPILATION_FLAGS ${COMPILATION_FLAGS} -fsanitize=fuzzer,address,undefined)
-  elseif (SANITIZER MATCHES "memory")
-    set(COMPILATION_FLAGS ${COMPILATION_FLAGS} -fsanitize=fuzzer,memory,undefined -fsanitize-memory-track-origins -fsanitize=fuzzer-no-link)
-  else()
-    message(FATAL_ERROR "Unknown sanitizer type. It must be set to `address` or `memory`.")
-  endif()
-else()
-	set(COMPILATION_FLAGS "$ENV{LIB_FUZZING_ENGINE} $ENV{CFLAGS} ${CUSTOM_C_FLAGS}")
-  separate_arguments(COMPILATION_FLAGS)
-endif()
+# FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION is the shared app/SDK sentinel for
+# fuzz-only relaxations. HAVE_* / APPNAME / ... arrive transitively from
+# secure_sdk (make list-defines + macros/add_macros.txt).
+function(eth_add_fuzz_target NAME INVARIANT)
+  # Invariant models are machine-local and regenerated per build (.gitignored).
+  ledger_fuzz_bootstrap_file("${INVARIANT}" ".{}\n")
+  ledger_fuzz_add_app_target(
+      NAME ${NAME}
+      HARNESS ${CMAKE_SOURCE_DIR}/harness/${NAME}.c
+      INVARIANT ${INVARIANT}
+      SOURCES ${C_SOURCES} ${ARGN}
+      INCLUDE_DIRECTORIES ${APP_INCLUDE_DIRS}
+      COMPILE_DEFINITIONS FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1)
+endfunction()
 
-# guard against in-source builds
-if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
-  message(FATAL_ERROR "In-source builds not allowed. Please make a new directory (called a build directory) and run CMake from there. You may need to remove CMakeCache.txt. ")
-endif()
+# Full-app target: one input drives a sequence of APDUs through the real dispatcher.
+eth_add_fuzz_target(fuzz_app
+    "${CMAKE_SOURCE_DIR}/invariants/fuzz_globals.zon"
+    ${LEDGER_FUZZ_TLV_MUTATOR_SOURCE})
 
-set(DEFINES
-    gcc
-    APPNAME=\"Fuzzing\"
-    API_LEVEL=21
-    TARGET=\"flex\"
-    TARGET_NAME=\"TARGET_FUZZ\"
-    APPVERSION=\"1.1.0\"
-    SDK_NAME=\"ledger-secure-sdk\"
-    SDK_VERSION=\"v21.3.3\"
-    SDK_HASH=\"d88d4db3c93665f52b5b1f45099d9d36dfaa06ba\"
-    gcc
-    __IO=volatile
-    NDEBUG
-    HAVE_BAGL_FONT_INTER_REGULAR_28PX
-    HAVE_BAGL_FONT_INTER_SEMIBOLD_28PX
-    HAVE_BAGL_FONT_INTER_MEDIUM_36PX
-    HAVE_INAPP_BLE_PAIRING
-    HAVE_NBGL
-    HAVE_PIEZO_SOUND
-    HAVE_SE_TOUCH
-    HAVE_SE_EINK_DISPLAY
-    NBGL_PAGE
-    NBGL_USE_CASE
-    SCREEN_SIZE_WALLET
-    HAVE_FAST_HOLD_TO_APPROVE
-    HAVE_LEDGER_PKI
-    HAVE_NES_CRYPT
-    HAVE_ST_AES
-    NATIVE_LITTLE_ENDIAN
-    HAVE_CRC
-    HAVE_HASH
-    HAVE_RIPEMD160
-    HAVE_SHA224
-    HAVE_SHA256
-    HAVE_SHA3
-    HAVE_SHA384
-    HAVE_SHA512
-    HAVE_SHA512_WITH_BLOCK_ALT_METHOD
-    HAVE_SHA512_WITH_BLOCK_ALT_METHOD_M0
-    HAVE_BLAKE2
-    HAVE_HMAC
-    HAVE_PBKDF2
-    HAVE_AES
-    HAVE_MATH
-    HAVE_RNG
-    HAVE_RNG_RFC6979
-    HAVE_RNG_SP800_90A
-    HAVE_ECC
-    HAVE_ECC_WEIERSTRASS
-    HAVE_ECC_TWISTED_EDWARDS
-    HAVE_ECC_MONTGOMERY
-    HAVE_SECP256K1_CURVE
-    HAVE_SECP256R1_CURVE
-    HAVE_SECP384R1_CURVE
-    HAVE_SECP521R1_CURVE
-    HAVE_FR256V1_CURVE
-    HAVE_STARK256_CURVE
-    HAVE_BRAINPOOL_P256R1_CURVE
-    HAVE_BRAINPOOL_P256T1_CURVE
-    HAVE_BRAINPOOL_P320R1_CURVE
-    HAVE_BRAINPOOL_P320T1_CURVE
-    HAVE_BRAINPOOL_P384R1_CURVE
-    HAVE_BRAINPOOL_P384T1_CURVE
-    HAVE_BRAINPOOL_P512R1_CURVE
-    HAVE_BRAINPOOL_P512T1_CURVE
-    HAVE_BLS12_381_G1_CURVE
-    HAVE_CV25519_CURVE
-    HAVE_CV448_CURVE
-    HAVE_ED25519_CURVE
-    HAVE_ED448_CURVE
-    HAVE_ECDH
-    HAVE_ECDSA
-    HAVE_EDDSA
-    HAVE_ECSCHNORR
-    HAVE_X25519
-    HAVE_X448
-    HAVE_AES_GCM
-    HAVE_CMAC
-    HAVE_AES_SIV
-    COIN_VARIANT=1
-    HAVE_BOLOS_APP_STACK_CANARY
-    IO_SEPROXYHAL_BUFFER_SIZE_B=300
-    HAVE_BLE
-    BLE_COMMAND_TIMEOUT_MS=2000
-    HAVE_BLE_APDU
-    BLE_SEGMENT_SIZE=32
-    HAVE_DEBUG_THROWS
-    NBGL_QRCODE
-    MAJOR_VERSION=1
-    MINOR_VERSION=1
-    PATCH_VERSION=0
-    IO_HID_EP_LENGTH=64
-    HAVE_SPRINTF
-    HAVE_SNPRINTF_FORMAT_U
-    HAVE_IO_USB
-    HAVE_L4_USBLIB
-    IO_USB_MAX_ENDPOINTS=4
-    HAVE_USB_APDU
-    USB_SEGMENT_SIZE=64
-    HAVE_WEBUSB
-    WEBUSB_URL_SIZE_B=0
-    WEBUSB_URL=
-    OS_IO_SEPROXYHAL
-    OS_IO_SEPH_BUFFER_SIZE=259
-    STANDARD_APP_SYNC_RAPDU
-    HAVE_SWAP
-    HAVE_TRANSACTION_CHECKS
-    HAVE_SAFE_ACCOUNT
-    explicit_bzero=bzero # Fix for https://github.com/google/sanitizers/issues/1507
-)
+# Internal plugins are driven through the plugin interface rather than an INS,
+# so a fuzzed APDU cannot reach them on its own.
+eth_add_fuzz_target(fuzz_plugin "${CMAKE_SOURCE_DIR}/invariants/fuzz_plugin.zon")
 
-add_compile_definitions(${DEFINES})
-
-FILE(
-  GLOB_RECURSE SDK_STD_SOURCES
-  ${BOLOS_SDK}/lib_standard_app/*.c
-  ${CMAKE_SOURCE_DIR}/../../ethereum-plugin-sdk/src/*.c
-  ./src/mock.c
-)
-list(
-  REMOVE_ITEM SDK_STD_SOURCES
-  ${BOLOS_SDK}/lib_standard_app/io.c
-  ${CMAKE_SOURCE_DIR}/../../ethereum-plugin-sdk/src/main.c
-  ${BOLOS_SDK}/lib_standard_app/main.c
-  ${BOLOS_SDK}/lib_standard_app/crypto_helpers.c
-)
-
-include_directories(
-  ${CMAKE_SOURCE_DIR}/../../ethereum-plugin-sdk/src/
-  ${CMAKE_SOURCE_DIR}/../../src
-  ${CMAKE_SOURCE_DIR}/../../src_features/generic_tx_parser/
-  ${CMAKE_SOURCE_DIR}/../../src_features/getPublicKey/
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_enum_value/
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_network_info/
-  ${CMAKE_SOURCE_DIR}/../../src_features/signTx/
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_trusted_name/
-  ${CMAKE_SOURCE_DIR}/../../src_features/getChallenge/
-  ${CMAKE_SOURCE_DIR}/../../src_features/signMessageEIP712/
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_proxy_info/
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_tx_simulation/
-  ${CMAKE_SOURCE_DIR}/../../src_features/signAuthorizationEIP7702/
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_safe_account/
-  ${CMAKE_SOURCE_DIR}/../../src_nbgl/
-  ${BOLOS_SDK}/include
-  ${BOLOS_SDK}/target/${TARGET_DEVICE}/include
-  ${BOLOS_SDK}/io/include
-  ${BOLOS_SDK}/io_legacy/include
-  ${BOLOS_SDK}/lib_cxng/include
-  ${BOLOS_SDK}/lib_cxng/src
-  ${BOLOS_SDK}/lib_ux_nbgl
-  ${BOLOS_SDK}/lib_nbgl/include
-  ${BOLOS_SDK}/lib_standard_app/
-  ${BOLOS_SDK}/lib_alloc/
-  ${CMAKE_SOURCE_DIR}/src/
-)
-
-FILE(GLOB_RECURSE SOURCES
-  ${CMAKE_SOURCE_DIR}/../../src_features/generic_tx_parser/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_trusted_name/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/getChallenge/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_enum_value/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_network_info/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provideNFTInformation/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_proxy_info/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_tx_simulation/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/signAuthorizationEIP7702/*.c
-  ${CMAKE_SOURCE_DIR}/../../src_features/provide_safe_account/*.c
-  ${CMAKE_SOURCE_DIR}/../../src/list.c
-  ${CMAKE_SOURCE_DIR}/../../src_nbgl/ui_utils.c
-  ${CMAKE_SOURCE_DIR}/../../src/mem.c
-  ${CMAKE_SOURCE_DIR}/../../src/mem_utils.c
-  ${CMAKE_SOURCE_DIR}/../../src/network.c
-  ${CMAKE_SOURCE_DIR}/../../src/tlv.c
-  ${CMAKE_SOURCE_DIR}/../../src/tlv_apdu.c
-  ${CMAKE_SOURCE_DIR}/../../src/uint128.c
-  ${CMAKE_SOURCE_DIR}/../../src/uint256.c
-  ${CMAKE_SOURCE_DIR}/../../src/time_format.c
-  ${CMAKE_SOURCE_DIR}/../../src/uint_common.c
-  ${CMAKE_SOURCE_DIR}/../../src/utils.c
-  ${CMAKE_SOURCE_DIR}/../../src/manage_asset_info.c
-  ${CMAKE_SOURCE_DIR}/../../src/hash_bytes.c
-)
-
-add_executable(fuzzer src/fuzzer.c ${SDK_STD_SOURCES} ${SOURCES})
-target_compile_options(fuzzer PRIVATE ${COMPILATION_FLAGS})
-target_link_options(fuzzer PRIVATE ${COMPILATION_FLAGS})
+# Stateful parsers behind a multi-APDU handshake fuzz_app cannot set up.
+eth_add_fuzz_target(fuzz_parser "${CMAKE_SOURCE_DIR}/invariants/fuzz_parser.zon")
